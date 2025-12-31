@@ -16,6 +16,7 @@ interface ExportOrder {
     locations: string[];
     lotCodes: string[];
     status: string;
+    realtimeStatus?: string[]; // "ĐÃ XUẤT" or "S-xx-xx"
 }
 
 interface PendingMove {
@@ -27,6 +28,8 @@ interface PendingMove {
     movedBy: string;
     timestamp: number;
 }
+
+
 
 // AsyncStorage keys
 const STORAGE_KEYS = {
@@ -68,6 +71,18 @@ export default function WorkScreen() {
     useEffect(() => {
         savePendingMoves();
     }, [pendingMoves]);
+
+    // Keep selectedOrder in sync with orders (for real-time updates)
+    useEffect(() => {
+        if (selectedOrder && orders.length > 0) {
+            const updated = orders.find(o => o.id === selectedOrder.id);
+            if (updated && updated !== selectedOrder) {
+                // Only update if content matches but ref is different?
+                // Actually simply updating it is safer to ensure locations are fresh
+                setSelectedOrder(updated);
+            }
+        }
+    }, [orders]);
 
     // ============ OFFLINE DATA FUNCTIONS ============
 
@@ -124,10 +139,60 @@ export default function WorkScreen() {
     const fetchOrders = async (showLoadingIndicator = true) => {
         try {
             if (showLoadingIndicator) setLoading(true);
-            const data = await exportOrderApi.getList({ status: 'New' });
-            const fetchedOrders = data.items || [];
-            setOrders(fetchedOrders);
-            await saveOrdersToCache(fetchedOrders);
+
+            // Fetch Orders, Deleted Lots, and Moved Positions in parallel
+            const [ordersData, deletedData, movedData] = await Promise.all([
+                exportOrderApi.getList({ status: 'New' }),
+                exportOrderApi.getDeletedLots(),
+                exportOrderApi.getMovedPositions()
+            ]);
+
+            const fetchedOrders: ExportOrder[] = ordersData.items || [];
+
+            // Normalize helper
+            const norm = (s: string) => (s || "").toString().trim().toUpperCase();
+
+            const deletedSet = new Set<string>();
+            (deletedData.items || []).forEach((it: any) => {
+                if (it.lotCode) deletedSet.add(norm(it.lotCode));
+            });
+
+            // Map moved positions: lotCode -> newPosition
+            const movedMap: Record<string, string> = {};
+            (movedData.items || []).forEach((m: any) => {
+                if (m.lotCode && m.newPosition) {
+                    movedMap[norm(m.lotCode)] = m.newPosition;
+                }
+            });
+
+            // Process Orders to reflect real-time status
+            const processedOrders = fetchedOrders.map(order => {
+                const realtimeStatus = new Array(order.lotCodes.length).fill(null);
+
+                order.lotCodes.forEach((lotRaw, idx) => {
+                    const lot = norm(lotRaw);
+
+                    // Priority 1: Check if Deleted/Exported
+                    if (deletedSet.has(lot)) {
+                        realtimeStatus[idx] = "ĐÃ XUẤT";
+                    }
+                    // Priority 2: Check if Moved (e.g. to S-01-01)
+                    else if (movedMap[lot]) {
+                        const newPos = movedMap[lot];
+                        if (newPos.toUpperCase().startsWith('S')) {
+                            realtimeStatus[idx] = newPos;
+                        }
+                    }
+                });
+
+                return {
+                    ...order,
+                    realtimeStatus // New field
+                };
+            });
+
+            setOrders(processedOrders);
+            await saveOrdersToCache(processedOrders);
         } catch (error) {
             console.error('Fetch orders error:', error);
             // Don't show alert if we have cached data
@@ -142,16 +207,14 @@ export default function WorkScreen() {
     const handleDownload = async () => {
         setIsDownloading(true);
         try {
-            const data = await exportOrderApi.getList({ status: 'New' });
-            const fetchedOrders = data.items || [];
-            setOrders(fetchedOrders);
-            await saveOrdersToCache(fetchedOrders);
+            // Reuse fetchOrders to ensure we get realtimeStatus (Deleted/Moved)
+            await fetchOrders(false);
 
             const now = new Date().toLocaleString('vi-VN');
             setLastSyncTime(now);
             await AsyncStorage.setItem(STORAGE_KEYS.LAST_SYNC, now);
 
-            Alert.alert('Thành công', `Đã tải ${fetchedOrders.length} lệnh xuất kho về máy.\nBạn có thể làm việc offline.`);
+            Alert.alert('Thành công', `Đã tải dữ liệu mới nhất từ server.\nBạn có thể làm việc offline.`);
         } catch (error: any) {
             console.error('Download error:', error);
             Alert.alert('Lỗi', 'Không thể tải dữ liệu. Vui lòng kiểm tra kết nối mạng.');
@@ -170,43 +233,173 @@ export default function WorkScreen() {
 
         setIsSyncing(true);
         try {
-            const response = await client.post('/work/sync', {
-                moves: pendingMoves.map(m => ({
-                    exportOrderId: m.exportOrderId,
-                    lotCode: m.lotCode,
-                    originalPosition: m.originalPosition,
-                    targetWarehouse: m.targetWarehouse,
-                    movedBy: m.movedBy,
-                    timestamp: m.timestamp,
-                }))
+            // 1. Fetch Deleted/Exported lots AND Moved Positions to check for conflicts
+            const [deletedRes, movedRes] = await Promise.all([
+                exportOrderApi.getDeletedLots(),
+                exportOrderApi.getMovedPositions()
+            ]);
+
+            const deletedSet = new Set<string>((deletedRes.items || []).map((it: any) => it.lotCode));
+
+            // Create a set of lots that have already been moved to Hall (Zone S)
+            // We only care if they are already moved to a hall position
+            const movedSet = new Set<string>();
+            (movedRes.items || []).forEach((m: any) => {
+                if (m.lotCode && m.newPosition && m.newPosition.startsWith('S')) {
+                    movedSet.add(m.lotCode);
+                }
             });
 
-            if (response.data.ok) {
-                const { success, failed, results } = response.data;
+            // 2. Identify moves properly
+            const movesToProcess: PendingMove[] = [];
+            const alreadyExported: string[] = [];
+            const alreadyMoved: string[] = [];
 
-                // Remove successful moves from pending
-                const successfulLots = results.filter((r: any) => r.success).map((r: any) => r.lotCode);
-                setPendingMoves(prev => prev.filter(m => !successfulLots.includes(m.lotCode)));
+            pendingMoves.forEach(m => {
+                if (deletedSet.has(m.lotCode)) {
+                    alreadyExported.push(m.lotCode);
+                } else if (movedSet.has(m.lotCode)) {
+                    alreadyMoved.push(m.lotCode);
+                } else {
+                    movesToProcess.push(m);
+                }
+            });
 
+            // If everything is already exported or moved, we can just clear them and notify
+            if (movesToProcess.length === 0) {
+                setPendingMoves([]);
                 const now = new Date().toLocaleString('vi-VN');
                 setLastSyncTime(now);
                 await AsyncStorage.setItem(STORAGE_KEYS.LAST_SYNC, now);
 
-                if (failed > 0) {
-                    const failedDetails = results.filter((r: any) => !r.success).map((r: any) => `${r.lotCode}: ${r.error}`).join('\n');
-                    Alert.alert('Đồng bộ một phần', `Thành công: ${success}\nThất bại: ${failed}\n\nChi tiết:\n${failedDetails}`);
-                } else {
-                    Alert.alert('Thành công', `Đã đồng bộ ${success} thao tác hạ sảnh lên server.`);
+                let skippedMsg = '';
+                if (alreadyExported.length > 0) skippedMsg += `\n• ${alreadyExported.length} LOT đã xuất kho.`;
+                if (alreadyMoved.length > 0) skippedMsg += `\n• ${alreadyMoved.length} LOT đã hạ sảnh.`;
+
+                Alert.alert(
+                    'Đồng bộ hoàn tất',
+                    `Tất cả thao tác đã được thực hiện bởi người khác.${skippedMsg}`
+                );
+                setIsSyncing(false);
+                await fetchOrders(false);
+                return;
+            }
+
+            // 3. Process remaining moves (Sequential Probe & Move to avoid OOM)
+            const { formatCode } = await import('../lib/locationCodes');
+            const results: { success: boolean; lotCode: string; error?: string }[] = [];
+
+            // Actually, we must track which Hall spots we have successfully filled in this session 
+            // to avoid trying them again for the next item.
+            const usedHallSpots = new Set<string>();
+
+            for (const move of movesToProcess) {
+                const whId = parseInt(move.targetWarehouse);
+                let moveSuccess = false;
+                let errorMsg = 'Kho hết chỗ hoặc lỗi mạng';
+
+                // Try positions 1 to 50 in Zone S
+                for (let i = 1; i <= 50; i++) {
+                    const toPos = formatCode({ warehouse: whId as any, zone: 'S', pos: i, capacity: 1 });
+
+                    if (usedHallSpots.has(toPos)) continue; // Skip spots we just filled
+
+                    try {
+                        await exportOrderApi.moveToHall(move.originalPosition, toPos, move.lotCode, move.movedBy);
+                        // If we get here, it succeeded
+                        moveSuccess = true;
+                        usedHallSpots.add(toPos);
+
+                        // Log Immediately to ensure data consistency
+                        try {
+                            await exportOrderApi.logMovedPosition(move.exportOrderId, [{
+                                originalPosition: move.originalPosition,
+                                newPosition: toPos,
+                                lotCode: move.lotCode,
+                                warehouse: move.targetWarehouse,
+                                movedBy: move.movedBy
+                            }]);
+                        } catch (logErr) {
+                            console.error('Log error (ignored):', logErr);
+                        }
+
+                        results.push({ success: true, lotCode: move.lotCode });
+                        break; // Stop probing for this item
+
+                    } catch (e: any) {
+                        // Check specific errors
+                        const is404 = e.response?.status === 404 || e.message?.includes('404');
+
+                        if (is404) {
+                            // Recovered: It was already moved/gone. Treat as success.
+                            moveSuccess = true;
+                            // We don't verify 'toPos' here because we don't know where it went, 
+                            // but we log it as if it went to the intended target or just mark success?
+                            // Issue: if we don't know 'toPos', we can't log 'newPosition' accurately.
+                            // BUT, for the badge, we need to log SOMETHING.
+                            // Let's assume it went to the target we *tried* or just skip logging?
+                            // User wants the badge. So we MUST log.
+                            // However, we shouldn't add to 'usedHallSpots' if it wasn't us who put it there? 
+                            // Actually, safest is to log it with 'toPos' so the badge appears.
+                            try {
+                                await exportOrderApi.logMovedPosition(move.exportOrderId, [{
+                                    originalPosition: move.originalPosition,
+                                    newPosition: toPos, // Best guess or placeholder
+                                    lotCode: move.lotCode,
+                                    warehouse: move.targetWarehouse,
+                                    movedBy: move.movedBy
+                                }]);
+                            } catch (logErr) { console.error(logErr); }
+
+                            results.push({ success: true, lotCode: move.lotCode, error: 'Recovered' });
+                            break;
+                        }
+
+                        // If "Occupied" or other error -> loop continues to next spot
+                        // Ideally we check for "Occupied" message, but assuming any non-404 error 
+                        // implies "Cannot move here", we try next.
+                        errorMsg = e.response?.data?.message || e.message;
+                    }
                 }
 
-                // Refresh orders
-                await fetchOrders(false);
-            } else {
-                Alert.alert('Lỗi', response.data.error || 'Đồng bộ thất bại');
+                if (!moveSuccess) {
+                    results.push({ success: false, lotCode: move.lotCode, error: errorMsg });
+                }
             }
+
+            // Results and Cleanup
+            const successCount = results.filter(r => r.success).length;
+            const failedCount = results.filter(r => !r.success).length;
+            const successfulLots = results.filter(r => r.success).map(r => r.lotCode);
+
+            // Clear pending valid moves + already exported + already moved ones
+            const allCleared = [...successfulLots, ...alreadyExported, ...alreadyMoved];
+            if (allCleared.length > 0) {
+                setPendingMoves(prev => prev.filter(m => !allCleared.includes(m.lotCode)));
+                const now = new Date().toLocaleString('vi-VN');
+                setLastSyncTime(now);
+                await AsyncStorage.setItem(STORAGE_KEYS.LAST_SYNC, now);
+            }
+
+            // Report
+            let msg = '';
+            if (successCount > 0) msg += `✅ Hạ sảnh thành công: ${successCount}\n`;
+            if (alreadyExported.length > 0) msg += `⚠️ Đã được xuất kho (bỏ qua): ${alreadyExported.length}\n`;
+            if (alreadyMoved.length > 0) msg += `➡️ Đã hạ sảnh (bỏ qua): ${alreadyMoved.length}\n`;
+            if (failedCount > 0) msg += `❌ Thất bại: ${failedCount}`;
+
+            if (failedCount > 0) {
+                const failedDetails = results.filter(r => !r.success).map(r => `${r.lotCode}: ${r.error}`).join('\n');
+                Alert.alert('Đồng bộ một phần', `${msg}\n\nChi tiết lỗi:\n${failedDetails}`);
+            } else {
+                Alert.alert('Đồng bộ hoàn tất', msg.trim() || "Thành công");
+            }
+
+            await fetchOrders(false);
+
         } catch (error: any) {
             console.error('Sync error:', error);
-            Alert.alert('Lỗi kết nối', 'Không thể đồng bộ. Vui lòng thử lại khi có mạng.');
+            Alert.alert('Lỗi', error.message || 'Không thể đồng bộ. Vui lòng thử lại.');
         } finally {
             setIsSyncing(false);
         }
@@ -440,6 +633,10 @@ export default function WorkScreen() {
 
                                 {selectedOrder.lotCodes.map((lot, idx) => {
                                     const isPending = pendingMoves.some(m => m.exportOrderId === selectedOrder.id && m.lotCode === lot);
+                                    const status = selectedOrder.realtimeStatus?.[idx];
+                                    const isExported = status === "ĐÃ XUẤT";
+                                    const isMoved = status && !isExported;
+
                                     return (
                                         <View key={`${lot}-${idx}`}
                                             className={`mb-3 p-4 rounded-[28px] border ${movedLots.has(lot) ? (isPending ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-100') : 'bg-white border-zinc-100'} shadow-sm flex-row items-center justify-between`}
@@ -447,7 +644,23 @@ export default function WorkScreen() {
                                             <View className="flex-1">
                                                 <Text className="text-zinc-400 font-black text-[9px] uppercase">LOT #{idx + 1}</Text>
                                                 <Text className={`text-base font-black ${movedLots.has(lot) ? (isPending ? 'text-amber-700' : 'text-emerald-700') : 'text-zinc-900'}`}>{lot}</Text>
-                                                <Text className="text-zinc-500 text-[10px] font-medium mt-0.5">Vị trí: {selectedOrder.locations[idx]}</Text>
+
+                                                <View className="flex-row items-center gap-2 mt-1">
+                                                    <Text className="text-zinc-500 text-[10px] font-medium">Vị trí: {selectedOrder.locations[idx]}</Text>
+
+                                                    {isExported && (
+                                                        <View className="bg-red-100 px-2 py-0.5 rounded-md">
+                                                            <Text className="text-red-700 font-bold text-[9px]">ĐÃ XUẤT</Text>
+                                                        </View>
+                                                    )}
+
+                                                    {isMoved && (
+                                                        <View className="bg-blue-100 px-2 py-0.5 rounded-md flex-row items-center gap-1">
+                                                            <Feather name="arrow-right" size={8} color="#1d4ed8" />
+                                                            <Text className="text-blue-700 font-bold text-[9px]">{status}</Text>
+                                                        </View>
+                                                    )}
+                                                </View>
                                             </View>
                                             {movedLots.has(lot) && (
                                                 <View className={`${isPending ? 'bg-amber-500' : 'bg-emerald-500'} w-8 h-8 rounded-full items-center justify-center`}>

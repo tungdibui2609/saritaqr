@@ -1,8 +1,9 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { parseCode } from '../lib/locationCodes';
-import { lotApi } from '../api/client';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { exportOrderApi } from '../api/client';
 
 interface ExportStatisticsViewProps {
     order: {
@@ -11,11 +12,219 @@ interface ExportStatisticsViewProps {
         lotCodes: string[];
         items?: any[]; // Need items for quantity info
     } | null;
+    onRefresh?: () => void; // Callback to refresh order data
 }
 
-export default function ExportStatisticsView({ order }: ExportStatisticsViewProps) {
+export default function ExportStatisticsView({ order, onRefresh }: ExportStatisticsViewProps) {
     const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
     const [droppedGroups, setDroppedGroups] = useState<Record<string, boolean>>({});
+    const [isSyncing, setIsSyncing] = useState(false);
+
+    // Load dropped state from AsyncStorage on mount
+    useEffect(() => {
+        if (!order?.id) return;
+        const loadDropped = async () => {
+            try {
+                const key = `dropped_${order.id}`;
+                const saved = await AsyncStorage.getItem(key);
+                if (saved) {
+                    setDroppedGroups(JSON.parse(saved));
+                }
+            } catch (e) {
+                console.log('Failed to load dropped state:', e);
+            }
+        };
+        loadDropped();
+    }, [order?.id]);
+
+    // Save dropped state to AsyncStorage when it changes
+    useEffect(() => {
+        if (!order?.id) return;
+        const saveDropped = async () => {
+            try {
+                const key = `dropped_${order.id}`;
+                await AsyncStorage.setItem(key, JSON.stringify(droppedGroups));
+            } catch (e) {
+                console.log('Failed to save dropped state:', e);
+            }
+        };
+        saveDropped();
+    }, [order?.id, droppedGroups]);
+
+    const handleSync = async () => {
+        if (!order) return;
+
+        // Find all dropped positions that are NOT in Hall yet
+        const droppedPositions: string[] = [];
+
+        // Iterate over droppedGroups to find marked row/levels
+        Object.entries(droppedGroups).forEach(([key, isDropped]) => {
+            if (!isDropped) return;
+
+            // Find positions belonging to this group
+            // We need to re-calculate statsData logic or pass it? 
+            // Better to re-derive from order.locations
+            order.locations.forEach(loc => {
+                const parsed = parseCode(loc);
+                if (!parsed) return;
+
+                // Construct key matching toggleGroup logic
+                let groupKey = '';
+                if (parsed.zone === 'S') groupKey = 'S'; // Hall already dropped? usually we don't drop Hall to Hall
+                else groupKey = `${parsed.row}-${parsed.level}`;
+
+                // Unique key includes Warehouse and Zone
+                const uniqueKey = `${parsed.warehouse}-${parsed.zone}-${groupKey}`;
+
+                if (uniqueKey === key) {
+                    if (parsed.zone !== 'S') { // Only move non-Hall items
+                        droppedPositions.push(loc);
+                    }
+                }
+            });
+        });
+
+        if (droppedPositions.length === 0) {
+            Alert.alert("Thông báo", "Chưa có vị trí nào được đánh dấu 'Hạ hàng' (màu xanh lá) để đồng bộ.");
+            return;
+        }
+
+        Alert.alert(
+            "Xác nhận hạ sảnh",
+            `Bạn có muốn chuyển ${droppedPositions.length} vị trí đã chọn xuống Sảnh không?`,
+            [
+                { text: "Hủy", style: "cancel" },
+                {
+                    text: "Đồng bộ ngay",
+                    onPress: async () => {
+                        setIsSyncing(true);
+                        try {
+                            // 1. Find target warehouse (assume active warehouse from first item)
+                            const firstPos = parseCode(droppedPositions[0]);
+                            const whId = firstPos?.warehouse || 1;
+
+                            // 2. Find empty hall spots (Client-side simple logic matched from Web)
+                            // We need existing occupied positions to be accurate. 
+                            // exportOrderApi.getEmptyHallPosition finds ONE. We need MULTIPLE.
+                            // Let's implement simple loop here or update API. 
+                            // For simplicity/robustness, we'll try to move one by one getting fresh spots? 
+                            // Or better: Fetch all positions first.
+
+                            // Optimization: Fetch all occupied positions once
+                            // Using a private helper if possible, or just calling listing API
+                            /*
+                              NOTE: Web uses a loop 1..20 and checks local 'posLots'. 
+                              Here we don't have full posLots. We should probably rely on a server endpoint 
+                              or simple heuristics. 
+                              Let's use a loop calling getEmptyHallPosition specifically? No that's slow.
+                              Let's try to fetch occupied list.
+                            */
+
+                            // Web logic:
+                            // const hallPositions = [];
+                            // for (let i = 1; i <= 20; i++) { check if occupied }
+
+                            // We will do a loop trying 1..20. 
+                            // But we need to check if ANYONE occupies it.
+
+                            // Wait, if we move to S-1, and S-1 is occupied by THIS order, it's fine? 
+                            // (e.g. shuffling). But usually S-1 is occupied by OTHER orders.
+
+                            // Simplest: Just call the API to move?
+                            // The API `moveToHall` takes `toPos`. We MUST provide it.
+                            // So we MUST find empty slots.
+
+                            // Let's do a quick fetch of all occupied positions from server
+                            // We'll trust getEmptyHallPosition implementation style.
+
+                            // REUSING exportOrderApi.getEmptyHallPosition logic but getting ALL empty
+                            // We can't reuse the single-return function efficiently.
+                            // Let's assume the user will verify.
+
+                            // ACTUALLY, for V1, let's just attempt to move to "S-01", "S-02"...
+                            // and if server errors, we catch it.
+
+                            // BETTER: Fetch occupied positions
+                            // We can use a direct fetch here if we import client
+                            // const res = await client.get('/locations/positions');
+                            // But we don't have client exported? It is `export default client`. 
+                            // Yes we can import it.
+
+                            const { default: client } = await import('../api/client');
+                            const resPos = await client.get('/locations/positions');
+                            const occupiedSet = new Set(resPos.data?.items?.map((it: any) => it.posCode) || []);
+
+                            const hallSpots: string[] = [];
+                            for (let i = 1; i <= 30; i++) { // Check up to 30 to be safe
+                                const { formatCode } = await import('../lib/locationCodes');
+                                // Fix: Add capacity prop
+                                const code = formatCode({ warehouse: whId as any, zone: 'S', pos: i, capacity: 1 });
+                                if (!occupiedSet.has(code)) {
+                                    hallSpots.push(code);
+                                }
+                            }
+
+                            if (hallSpots.length < droppedPositions.length) {
+                                throw new Error(`Không đủ chỗ trống ở Sảnh kho ${whId}. (Trống ${hallSpots.length}, Cần ${droppedPositions.length})`);
+                            }
+
+                            // EXECUTE MOVES
+                            const batchMoves = [];
+                            const movesToLog = [];
+                            const user = "MobileUser"; // Or get from auth if avaiable
+
+                            for (let i = 0; i < droppedPositions.length; i++) {
+                                const fromPos = droppedPositions[i];
+                                const toPos = hallSpots[i];
+                                // Use strict fallback if lotCode missing (should not happen)
+                                const lotCode = order.lotCodes[order.locations.indexOf(fromPos)] || "UNKNOWN";
+
+                                batchMoves.push(
+                                    exportOrderApi.moveToHall(fromPos, toPos, lotCode, user)
+                                );
+
+                                movesToLog.push({
+                                    originalPosition: fromPos,
+                                    newPosition: toPos,
+                                    lotCode: lotCode,
+                                    warehouse: whId.toString(),
+                                    movedBy: user
+                                });
+                            }
+
+                            // Execute API calls
+                            await Promise.all(batchMoves);
+
+                            // LOG MOVEMENTS
+                            await exportOrderApi.logMovedPosition(order.id, movesToLog);
+
+                            // Success
+                            Alert.alert("Thành công", `Đã hạ ${droppedPositions.length} vị trí xuống sảnh!`);
+
+                            // Clear dropped state locally?
+                            // Optional: clear to avoid confusion.
+                            // Or keep them green? Green means "Dropped". 
+                            // If they are physically in Hall now, they are technically "Dropped".
+                            // But they will disappear from the "Row/Level" list if we refresh order?
+                            // Yes, if layout changes, they might move to Zone S group.
+                            // So let's clear dropped state for these keys to reset UI.
+                            setDroppedGroups({});
+                            AsyncStorage.removeItem(`dropped_${order.id}`); // Clear storage
+
+                            // Refresh data
+                            if (onRefresh) onRefresh();
+
+                        } catch (e: any) {
+                            Alert.alert("Lỗi", e.message || "Đồng bộ thất bại");
+                            console.error(e);
+                        } finally {
+                            setIsSyncing(false);
+                        }
+                    }
+                }
+            ]
+        );
+    };
 
     const toggleGroup = (key: string) => {
         setExpandedGroups(prev => ({ ...prev, [key]: !prev[key] }));
@@ -146,6 +355,55 @@ export default function ExportStatisticsView({ order }: ExportStatisticsViewProp
 
     return (
         <ScrollView className="flex-1 px-5 pt-4" contentContainerStyle={{ paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
+            {/* Color Legend */}
+            <View className="bg-white rounded-xl p-3 mb-4 border border-zinc-200 shadow-sm">
+                <Text className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mb-2">Chú thích màu ưu tiên</Text>
+                <View className="flex-row flex-wrap gap-3">
+                    <View className="flex-row items-center gap-1.5">
+                        <View className="w-4 h-4 rounded bg-red-600" />
+                        <Text className="text-[11px] text-zinc-600">Lấy trước</Text>
+                    </View>
+                    <View className="flex-row items-center gap-1.5">
+                        <View className="w-4 h-4 rounded bg-yellow-400" />
+                        <Text className="text-[11px] text-zinc-600">Ưu tiên 2</Text>
+                    </View>
+                    <View className="flex-row items-center gap-1.5">
+                        <View className="w-4 h-4 rounded bg-amber-800" />
+                        <Text className="text-[11px] text-zinc-600">Ưu tiên 3</Text>
+                    </View>
+                    <View className="flex-row items-center gap-1.5">
+                        <View className="w-4 h-4 rounded bg-purple-600" />
+                        <Text className="text-[11px] text-zinc-600">Ưu tiên 4</Text>
+                    </View>
+                    <View className="flex-row items-center gap-1.5">
+                        <View className="w-4 h-4 rounded bg-blue-600" />
+                        <Text className="text-[11px] text-zinc-600">Bình thường</Text>
+                    </View>
+                    <View className="flex-row items-center gap-1.5">
+                        <View className="w-4 h-4 rounded bg-emerald-500" />
+                        <Text className="text-[11px] text-zinc-600">Nháp đã hạ</Text>
+                    </View>
+                </View>
+            </View>
+
+            {/* Sync Button */}
+            <View className="flex-row justify-end mb-4">
+                <TouchableOpacity
+                    onPress={handleSync}
+                    disabled={isSyncing}
+                    className={`flex-row items-center gap-2 px-4 py-2 rounded-lg shadow-sm ${isSyncing ? 'bg-zinc-100' : 'bg-emerald-500'}`}
+                >
+                    {isSyncing ? (
+                        <ActivityIndicator color="#10b981" size="small" />
+                    ) : (
+                        <MaterialCommunityIcons name="cloud-upload-outline" size={18} color="white" />
+                    )}
+                    <Text className={`font-medium ${isSyncing ? 'text-zinc-400' : 'text-white'}`}>
+                        {isSyncing ? 'Đang đồng bộ...' : 'Đồng bộ hạ sảnh'}
+                    </Text>
+                </TouchableOpacity>
+            </View>
+
             {statsData.length === 0 ? (
                 <Text className="text-center text-zinc-400 mt-10">Không có dữ liệu vị trí hợp lệ</Text>
             ) : (
@@ -237,12 +495,26 @@ export default function ExportStatisticsView({ order }: ExportStatisticsViewProp
                                                             <View className="flex-row flex-wrap gap-1 mt-1">
                                                                 {detail.positions.map((pos, idx) => {
                                                                     const parsed = parseCode(pos);
+                                                                    // Priority color lookup
+                                                                    const itemAtPos = order.items?.find((it: any) => it.position === pos);
+                                                                    let bgClass = isDropped ? 'bg-emerald-500 border-emerald-600' : 'bg-blue-600 border-blue-700';
+                                                                    if (itemAtPos && !isDropped) {
+                                                                        if (itemAtPos.priorityLevel === 'red' || (itemAtPos.isPriority && !itemAtPos.priorityLevel)) {
+                                                                            bgClass = 'bg-red-600 border-red-700';
+                                                                        } else if (itemAtPos.priorityLevel === 'yellow') {
+                                                                            bgClass = 'bg-yellow-400 border-yellow-500';
+                                                                        } else if (itemAtPos.priorityLevel === 'brown') {
+                                                                            bgClass = 'bg-amber-800 border-amber-900';
+                                                                        } else if (itemAtPos.priorityLevel === 'purple') {
+                                                                            bgClass = 'bg-purple-600 border-purple-700';
+                                                                        }
+                                                                    }
                                                                     return (
                                                                         <View
                                                                             key={pos}
-                                                                            className={`border rounded-md w-8 h-8 items-center justify-center ${isDropped ? 'bg-emerald-500 border-emerald-600' : 'bg-blue-600 border-blue-700'}`}
+                                                                            className={`border rounded-md w-8 h-8 items-center justify-center ${bgClass}`}
                                                                         >
-                                                                            <Text className="text-[10px] font-bold text-white">
+                                                                            <Text className={`text-[10px] font-bold ${itemAtPos?.priorityLevel === 'yellow' ? 'text-black' : 'text-white'}`}>
                                                                                 {parsed?.pos || idx + 1}
                                                                             </Text>
                                                                         </View>
@@ -252,22 +524,43 @@ export default function ExportStatisticsView({ order }: ExportStatisticsViewProp
                                                         ) : (
                                                             <View className="flex-row gap-1 h-8 mt-1">
                                                                 {[1, 2, 3, 4, 5, 6, 7, 8].map(posNum => {
-                                                                    const isTarget = detail.positions.some(p => {
+                                                                    // Find actual position code matching this posNum
+                                                                    const matchingPos = detail.positions.find(p => {
                                                                         const parsed = parseCode(p);
                                                                         return parsed && parsed.pos === posNum;
                                                                     });
+                                                                    const isTarget = !!matchingPos;
+
+                                                                    // Priority color lookup
+                                                                    let bgClass = 'bg-white border-zinc-200';
+                                                                    let textClass = 'text-zinc-300';
+                                                                    if (isTarget) {
+                                                                        const itemAtPos = order.items?.find((it: any) => it.position === matchingPos);
+                                                                        bgClass = isDropped ? 'bg-emerald-500 border-emerald-600' : 'bg-blue-600 border-blue-700';
+                                                                        textClass = 'text-white';
+                                                                        if (itemAtPos && !isDropped) {
+                                                                            if (itemAtPos.priorityLevel === 'red' || (itemAtPos.isPriority && !itemAtPos.priorityLevel)) {
+                                                                                bgClass = 'bg-red-600 border-red-700';
+                                                                            } else if (itemAtPos.priorityLevel === 'yellow') {
+                                                                                bgClass = 'bg-yellow-400 border-yellow-500';
+                                                                                textClass = 'text-black';
+                                                                            } else if (itemAtPos.priorityLevel === 'brown') {
+                                                                                bgClass = 'bg-amber-800 border-amber-900';
+                                                                            } else if (itemAtPos.priorityLevel === 'purple') {
+                                                                                bgClass = 'bg-purple-600 border-purple-700';
+                                                                            }
+                                                                        }
+                                                                    } else if (isDropped) {
+                                                                        bgClass = 'bg-white border-emerald-200 opacity-60';
+                                                                        textClass = 'text-emerald-200';
+                                                                    }
 
                                                                     return (
                                                                         <View
                                                                             key={posNum}
-                                                                            className={`flex-1 rounded-md items-center justify-center border ${isTarget
-                                                                                ? (isDropped ? 'bg-emerald-500 border-emerald-600' : 'bg-blue-600 border-blue-700')
-                                                                                : (isDropped ? 'bg-white border-emerald-200 opacity-60' : 'bg-white border-zinc-200')
-                                                                                }`}
+                                                                            className={`flex-1 rounded-md items-center justify-center border ${bgClass}`}
                                                                         >
-                                                                            <Text
-                                                                                className={`text-[10px] font-bold ${isTarget ? 'text-white' : (isDropped ? 'text-emerald-200' : 'text-zinc-300')}`}
-                                                                            >
+                                                                            <Text className={`text-[10px] font-bold ${textClass}`}>
                                                                                 {posNum}
                                                                             </Text>
                                                                         </View>

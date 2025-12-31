@@ -25,6 +25,17 @@ export const exportOrderApi = {
         return response.data; // { ok: true, item: {...} }
     },
 
+    // Lấy danh sách LOT đã xuất/xóa (để kiểm tra conflict khi đồng bộ)
+    getDeletedLots: async () => {
+        try {
+            const response = await client.get('/lots/deleted', { params: { all: 1 } });
+            return response.data; // { ok: true, items: [...] }
+        } catch (e) {
+            console.error('getDeletedLots error:', e);
+            return { ok: false, items: [] };
+        }
+    },
+
     // Tìm một vị trí sảnh còn trống
     // Lưu ý: Logic này tương đối đơn giản, tìm trong 20 vị trí sảnh của kho
     getEmptyHallPosition: async (warehouseId: string) => {
@@ -78,6 +89,17 @@ export const exportOrderApi = {
             moves
         });
         return response.data;
+    },
+
+    // Lấy danh sách các vị trí đã di chuyển (Move History)
+    getMovedPositions: async () => {
+        try {
+            const response = await client.get('/export-orders/moved-positions');
+            return response.data; // { ok: true, items: [...] }
+        } catch (e) {
+            console.error('getMovedPositions error:', e);
+            return { ok: false, items: [] };
+        }
     }
 };
 
