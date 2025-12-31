@@ -15,45 +15,14 @@ interface ExportStatisticsViewProps {
 
 export default function ExportStatisticsView({ order }: ExportStatisticsViewProps) {
     const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-    const [liveTags, setLiveTags] = useState<Record<string, string[]>>({});
-
-    // Fetch live tags on mount
-    useEffect(() => {
-        if (!order || !order.lotCodes) return;
-
-        const fetchLiveTags = async () => {
-            try {
-                // Get unique lot codes
-                const uniqueLots = Array.from(new Set(order.lotCodes));
-                if (uniqueLots.length === 0) return;
-
-                // Fetch individually (optimization needed if lots > 20)
-                const promises = uniqueLots.map(code => lotApi.getList({ q: code }));
-                const results = await Promise.all(promises);
-
-                const newTags: Record<string, string[]> = {};
-                results.forEach((res: any, idx) => {
-                    const code = uniqueLots[idx];
-                    if (res?.items) {
-                        // Find exact match
-                        const match = res.items.find((it: any) => it.lotCode === code);
-                        if (match && match.tags) {
-                            newTags[code] = match.tags;
-                        }
-                    }
-                });
-
-                setLiveTags(prev => ({ ...prev, ...newTags }));
-            } catch (e) {
-                console.error("Failed to fetch live tags", e);
-            }
-        };
-
-        fetchLiveTags();
-    }, [order]);
+    const [droppedGroups, setDroppedGroups] = useState<Record<string, boolean>>({});
 
     const toggleGroup = (key: string) => {
         setExpandedGroups(prev => ({ ...prev, [key]: !prev[key] }));
+    };
+
+    const toggleDropped = (key: string) => {
+        setDroppedGroups(prev => ({ ...prev, [key]: !prev[key] }));
     };
 
     const statsData = useMemo(() => {
@@ -231,72 +200,82 @@ export default function ExportStatisticsView({ order }: ExportStatisticsViewProp
                                         {znItem.details.map((detail, dIdx) => {
                                             const uniqueKey = `${whItem.warehouse}-${znItem.zone}-${detail.key}`;
                                             const isExpanded = expandedGroups[uniqueKey];
+                                            const isDropped = droppedGroups[uniqueKey];
 
                                             return (
-                                                <TouchableOpacity
+                                                <View
                                                     key={detail.key}
-                                                    onPress={() => toggleGroup(uniqueKey)}
-                                                    className="bg-zinc-50 rounded-xl border border-zinc-100 p-3"
+                                                    className={`bg-zinc-50 rounded-xl border p-3 ${isDropped ? 'border-emerald-200 bg-emerald-50' : 'border-zinc-100'}`}
                                                 >
                                                     <View className="flex-row justify-between items-center mb-2">
                                                         <View className="flex-row items-center gap-2">
-                                                            <View className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                                                            <Text className="font-bold text-zinc-700 text-sm">
+                                                            <View className={`w-1.5 h-1.5 rounded-full ${isDropped ? 'bg-emerald-500' : 'bg-blue-500'}`} />
+                                                            <Text className={`font-bold text-sm ${isDropped ? 'text-emerald-700' : 'text-zinc-700'}`}>
                                                                 {znItem.zone === 'S' ? 'Sảnh' : `Dãy ${detail.row} - Tầng ${detail.level}`}
                                                             </Text>
+                                                            <TouchableOpacity
+                                                                onPress={() => toggleDropped(uniqueKey)}
+                                                                className={`px-2 py-0.5 rounded text-[10px] font-bold border ${isDropped ? 'bg-emerald-500 border-emerald-600' : 'bg-white border-zinc-300'}`}
+                                                            >
+                                                                <Text className={`text-[10px] font-bold ${isDropped ? 'text-white' : 'text-zinc-400'}`}>
+                                                                    {isDropped ? 'Đã hạ' : 'Hạ hàng'}
+                                                                </Text>
+                                                            </TouchableOpacity>
                                                         </View>
                                                         <View className="flex-row items-center gap-2">
-                                                            <Text className="text-zinc-400 text-xs text-right">
+                                                            <Text className={`text-xs text-right ${isDropped ? 'text-emerald-600' : 'text-zinc-400'}`}>
                                                                 {detail.positions.length} LOT
                                                                 {detail.totalQty > 0 && ` • ${detail.totalQty} ${detail.unit}`}
                                                             </Text>
-                                                            <Feather name={isExpanded ? "chevron-up" : "chevron-down"} size={14} color="#a1a1aa" />
+                                                            <Feather name={isExpanded ? "chevron-up" : "chevron-down"} size={14} color={isDropped ? "#059669" : "#a1a1aa"} />
                                                         </View>
                                                     </View>
 
-                                                    {/* Grid Visualization */}
-                                                    {znItem.zone === 'S' ? (
-                                                        <View className="flex-row flex-wrap gap-1 mt-1">
-                                                            {detail.positions.map((pos, idx) => {
-                                                                const parsed = parseCode(pos);
-                                                                return (
-                                                                    <View
-                                                                        key={pos}
-                                                                        className="bg-blue-600 border border-blue-700 rounded-md w-8 h-8 items-center justify-center"
-                                                                    >
-                                                                        <Text className="text-[10px] font-bold text-white">
-                                                                            {parsed?.pos || idx + 1}
-                                                                        </Text>
-                                                                    </View>
-                                                                );
-                                                            })}
-                                                        </View>
-                                                    ) : (
-                                                        <View className="flex-row gap-1 h-8 mt-1">
-                                                            {[1, 2, 3, 4, 5, 6, 7, 8].map(posNum => {
-                                                                const isTarget = detail.positions.some(p => {
-                                                                    const parsed = parseCode(p);
-                                                                    return parsed && parsed.pos === posNum;
-                                                                });
-
-                                                                return (
-                                                                    <View
-                                                                        key={posNum}
-                                                                        className={`flex-1 rounded-md items-center justify-center border ${isTarget
-                                                                            ? 'bg-blue-600 border-blue-700'
-                                                                            : 'bg-white border-zinc-200'
-                                                                            }`}
-                                                                    >
-                                                                        <Text
-                                                                            className={`text-[10px] font-bold ${isTarget ? 'text-white' : 'text-zinc-300'}`}
+                                                    {/* Grid Visualization - Click here to expand */}
+                                                    <TouchableOpacity onPress={() => toggleGroup(uniqueKey)}>
+                                                        {znItem.zone === 'S' ? (
+                                                            <View className="flex-row flex-wrap gap-1 mt-1">
+                                                                {detail.positions.map((pos, idx) => {
+                                                                    const parsed = parseCode(pos);
+                                                                    return (
+                                                                        <View
+                                                                            key={pos}
+                                                                            className={`border rounded-md w-8 h-8 items-center justify-center ${isDropped ? 'bg-emerald-500 border-emerald-600' : 'bg-blue-600 border-blue-700'}`}
                                                                         >
-                                                                            {posNum}
-                                                                        </Text>
-                                                                    </View>
-                                                                );
-                                                            })}
-                                                        </View>
-                                                    )}
+                                                                            <Text className="text-[10px] font-bold text-white">
+                                                                                {parsed?.pos || idx + 1}
+                                                                            </Text>
+                                                                        </View>
+                                                                    );
+                                                                })}
+                                                            </View>
+                                                        ) : (
+                                                            <View className="flex-row gap-1 h-8 mt-1">
+                                                                {[1, 2, 3, 4, 5, 6, 7, 8].map(posNum => {
+                                                                    const isTarget = detail.positions.some(p => {
+                                                                        const parsed = parseCode(p);
+                                                                        return parsed && parsed.pos === posNum;
+                                                                    });
+
+                                                                    return (
+                                                                        <View
+                                                                            key={posNum}
+                                                                            className={`flex-1 rounded-md items-center justify-center border ${isTarget
+                                                                                ? (isDropped ? 'bg-emerald-500 border-emerald-600' : 'bg-blue-600 border-blue-700')
+                                                                                : (isDropped ? 'bg-white border-emerald-200 opacity-60' : 'bg-white border-zinc-200')
+                                                                                }`}
+                                                                        >
+                                                                            <Text
+                                                                                className={`text-[10px] font-bold ${isTarget ? 'text-white' : (isDropped ? 'text-emerald-200' : 'text-zinc-300')}`}
+                                                                            >
+                                                                                {posNum}
+                                                                            </Text>
+                                                                        </View>
+                                                                    );
+                                                                })}
+                                                            </View>
+                                                        )}
+                                                    </TouchableOpacity>
 
 
                                                     {/* Expanded List - Product Details */}
@@ -322,10 +301,10 @@ export default function ExportStatisticsView({ order }: ExportStatisticsViewProp
                                                                                     </Text>
                                                                                     {item.packDate && <Text className="text-[10px] text-zinc-400">NSX: {item.packDate}</Text>}
                                                                                 </View>
-                                                                                {/* Logic to merge live tags with fallback to item tags */}
-                                                                                {(liveTags[lotCode]?.length > 0 || item.tags?.length > 0) && (
+                                                                                {/* Tag Rendering (Simplified - Offline Only) */}
+                                                                                {item.tags?.length > 0 && (
                                                                                     <View className="flex-row flex-wrap gap-1 mt-1">
-                                                                                        {(liveTags[lotCode] || item.tags || []).flatMap((rawTag: string) => {
+                                                                                        {(item.tags || []).flatMap((rawTag: string) => {
                                                                                             // Logic matched from Web: Split ONLY by '>'
                                                                                             return rawTag.split('>')
                                                                                                 .map(t => t.trim())
@@ -372,7 +351,7 @@ export default function ExportStatisticsView({ order }: ExportStatisticsViewProp
                                                             </TouchableOpacity>
                                                         </View>
                                                     )}
-                                                </TouchableOpacity>
+                                                </View>
                                             );
                                         })}
                                     </View>
