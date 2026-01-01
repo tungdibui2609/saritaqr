@@ -177,10 +177,9 @@ export default function WorkScreen() {
             if (showLoadingIndicator) setLoading(true);
 
             // Fetch Orders, Deleted Lots, and Moved Positions in parallel
-            const [ordersData, deletedData, movedData] = await Promise.all([
+            const [ordersData, deletedData] = await Promise.all([
                 exportOrderApi.getList({ status: 'New' }),
-                exportOrderApi.getDeletedLots(),
-                exportOrderApi.getMovedPositions()
+                exportOrderApi.getDeletedLots()
             ]);
 
             const fetchedOrders: ExportOrder[] = ordersData.items || [];
@@ -193,13 +192,7 @@ export default function WorkScreen() {
                 if (it.lotCode) deletedSet.add(norm(it.lotCode));
             });
 
-            // Map moved positions: lotCode -> newPosition
-            const movedMap: Record<string, string> = {};
-            (movedData.items || []).forEach((m: any) => {
-                if (m.lotCode && m.newPosition) {
-                    movedMap[norm(m.lotCode)] = m.newPosition;
-                }
-            });
+
 
             // Process Orders to reflect real-time status
             const processedOrders = fetchedOrders.map(order => {
@@ -211,13 +204,6 @@ export default function WorkScreen() {
                     // Priority 1: Check if Deleted/Exported
                     if (deletedSet.has(lot)) {
                         realtimeStatus[idx] = "ĐÃ XUẤT";
-                    }
-                    // Priority 2: Check if Moved (e.g. to S-01-01)
-                    else if (movedMap[lot]) {
-                        const newPos = movedMap[lot];
-                        if (newPos.toUpperCase().startsWith('S')) {
-                            realtimeStatus[idx] = newPos;
-                        }
                     }
                 });
 
@@ -269,22 +255,13 @@ export default function WorkScreen() {
 
         setIsSyncing(true);
         try {
-            // 1. Fetch Deleted/Exported lots AND Moved Positions to check for conflicts
-            const [deletedRes, movedRes] = await Promise.all([
-                exportOrderApi.getDeletedLots(),
-                exportOrderApi.getMovedPositions()
-            ]);
+            // 1. Fetch Deleted/Exported lots
+            const deletedRes = await exportOrderApi.getDeletedLots();
 
             const deletedSet = new Set<string>((deletedRes.items || []).map((it: any) => it.lotCode));
 
-            // Create a set of lots that have already been moved to Hall (Zone S)
-            // We only care if they are already moved to a hall position
+            // Moved set is no longer tracked via API
             const movedSet = new Set<string>();
-            (movedRes.items || []).forEach((m: any) => {
-                if (m.lotCode && m.newPosition && m.newPosition.startsWith('S')) {
-                    movedSet.add(m.lotCode);
-                }
-            });
 
             // 2. Identify moves properly
             const movesToProcess: PendingMove[] = [];
@@ -348,13 +325,7 @@ export default function WorkScreen() {
 
                         // Log Immediately to ensure data consistency
                         try {
-                            await exportOrderApi.logMovedPosition(move.exportOrderId, [{
-                                originalPosition: move.originalPosition,
-                                newPosition: toPos,
-                                lotCode: move.lotCode,
-                                warehouse: move.targetWarehouse,
-                                movedBy: move.movedBy
-                            }]);
+                            // Log removed as per requirement
                         } catch (logErr) {
                             console.error('Log error (ignored):', logErr);
                         }
@@ -378,13 +349,7 @@ export default function WorkScreen() {
                             // However, we shouldn't add to 'usedHallSpots' if it wasn't us who put it there? 
                             // Actually, safest is to log it with 'toPos' so the badge appears.
                             try {
-                                await exportOrderApi.logMovedPosition(move.exportOrderId, [{
-                                    originalPosition: move.originalPosition,
-                                    newPosition: toPos, // Best guess or placeholder
-                                    lotCode: move.lotCode,
-                                    warehouse: move.targetWarehouse,
-                                    movedBy: move.movedBy
-                                }]);
+                                // Log removed as per requirement
                             } catch (logErr) { console.error(logErr); }
 
                             results.push({ success: true, lotCode: move.lotCode, error: 'Recovered' });

@@ -76,31 +76,7 @@ export const exportOrderApi = {
         return response.data;
     },
 
-    // Log vị trí đã di chuyển cho lệnh xuất
-    logMovedPosition: async (exportOrderId: string, moves: Array<{
-        originalPosition: string;
-        newPosition: string;
-        lotCode: string;
-        warehouse: string;
-        movedBy: string;
-    }>) => {
-        const response = await client.post('/export-orders/moved-positions', {
-            exportOrderId,
-            moves
-        });
-        return response.data;
-    },
 
-    // Lấy danh sách các vị trí đã di chuyển (Move History)
-    getMovedPositions: async () => {
-        try {
-            const response = await client.get('/export-orders/moved-positions');
-            return response.data; // { ok: true, items: [...] }
-        } catch (e) {
-            console.error('getMovedPositions error:', e);
-            return { ok: false, items: [] };
-        }
-    }
 };
 
 export const lotApi = {

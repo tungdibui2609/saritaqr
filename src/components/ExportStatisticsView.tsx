@@ -195,8 +195,8 @@ export default function ExportStatisticsView({ order, onRefresh }: ExportStatist
                             // Execute API calls
                             await Promise.all(batchMoves);
 
-                            // LOG MOVEMENTS
-                            await exportOrderApi.logMovedPosition(order.id, movesToLog);
+                            // LOG MOVEMENTS removed
+                            // await exportOrderApi.logMovedPosition(order.id, movesToLog);
 
                             // Success
                             Alert.alert("Thành công", `Đã hạ ${droppedPositions.length} vị trí xuống sảnh!`);
