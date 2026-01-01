@@ -56,12 +56,15 @@ export default function WorkScreen() {
     const [scanned, setScanned] = useState(false);
     const isProcessing = useRef(false);
 
+    // State for Feedback Toast
+    const [scanFeedback, setScanFeedback] = useState<{ message: string, type: 'success' | 'warning' | 'error' } | null>(null);
+
     // State for optimization & Tabs
     const [activeTab, setActiveTab] = useState<'stats' | 'scan'>('stats');
     const [isScanning, setIsScanning] = useState(false);
-    const [showWhModal, setShowWhModal] = useState(false);
-    const [targetLot, setTargetLot] = useState<{ lotCode: string, originalPos: string, index: number } | null>(null);
-    const [processingWh, setProcessingWh] = useState(false);
+    // const [showWhModal, setShowWhModal] = useState(false);
+    // const [targetLot, setTargetLot] = useState<{ lotCode: string, originalPos: string, index: number } | null>(null);
+    // const [processingWh, setProcessingWh] = useState(false);
 
     // Camera Toggle State
     const [isCameraActive, setIsCameraActive] = useState(true);
@@ -176,13 +179,16 @@ export default function WorkScreen() {
         try {
             if (showLoadingIndicator) setLoading(true);
 
-            // Fetch Orders, Deleted Lots, and Moved Positions in parallel
-            const [ordersData, deletedData] = await Promise.all([
+            // Fetch Orders, Deleted Lots, and ALL Current Positions (to check for Hall status)
+            const { default: client } = await import('../api/client');
+            const [ordersData, deletedData, positionsData] = await Promise.all([
                 exportOrderApi.getList({ status: 'New' }),
-                exportOrderApi.getDeletedLots()
+                exportOrderApi.getDeletedLots(),
+                client.get('/locations/positions')
             ]);
 
             const fetchedOrders: ExportOrder[] = ordersData.items || [];
+            const allPositions = positionsData.data.items || [];
 
             // Normalize helper
             const norm = (s: string) => (s || "").toString().trim().toUpperCase();
@@ -194,6 +200,12 @@ export default function WorkScreen() {
 
 
 
+            // Map current positions: lotCode -> position
+            const positionMap: Record<string, string> = {};
+            allPositions.forEach((p: any) => {
+                if (p.lotCode) positionMap[norm(p.lotCode)] = p.posCode;
+            });
+
             // Process Orders to reflect real-time status
             const processedOrders = fetchedOrders.map(order => {
                 const realtimeStatus = new Array(order.lotCodes.length).fill(null);
@@ -204,6 +216,13 @@ export default function WorkScreen() {
                     // Priority 1: Check if Deleted/Exported
                     if (deletedSet.has(lot)) {
                         realtimeStatus[idx] = "ĐÃ XUẤT";
+                    }
+                    // Priority 2: Check if currently in Hall (Zone S)
+                    else if (positionMap[lot]) {
+                        const currentPos = positionMap[lot];
+                        if (currentPos && currentPos.startsWith('S-')) {
+                            realtimeStatus[idx] = currentPos; // Display actual Hall position e.g. S-01-05
+                        }
                     }
                 });
 
@@ -247,6 +266,8 @@ export default function WorkScreen() {
 
     // ============ SYNC FUNCTION ============
 
+    // ============ SYNC FUNCTION ============
+
     const handleSync = async () => {
         if (pendingMoves.length === 0) {
             Alert.alert('Thông báo', 'Không có thao tác nào cần đồng bộ.');
@@ -257,22 +278,19 @@ export default function WorkScreen() {
         try {
             // 1. Fetch Deleted/Exported lots
             const deletedRes = await exportOrderApi.getDeletedLots();
-
             const deletedSet = new Set<string>((deletedRes.items || []).map((it: any) => it.lotCode));
 
             // Moved set is no longer tracked via API
-            const movedSet = new Set<string>();
+            // const movedSet = new Set<string>();
 
             // 2. Identify moves properly
             const movesToProcess: PendingMove[] = [];
             const alreadyExported: string[] = [];
-            const alreadyMoved: string[] = [];
+            // const alreadyMoved: string[] = [];
 
             pendingMoves.forEach(m => {
                 if (deletedSet.has(m.lotCode)) {
                     alreadyExported.push(m.lotCode);
-                } else if (movedSet.has(m.lotCode)) {
-                    alreadyMoved.push(m.lotCode);
                 } else {
                     movesToProcess.push(m);
                 }
@@ -287,7 +305,6 @@ export default function WorkScreen() {
 
                 let skippedMsg = '';
                 if (alreadyExported.length > 0) skippedMsg += `\n• ${alreadyExported.length} LOT đã xuất kho.`;
-                if (alreadyMoved.length > 0) skippedMsg += `\n• ${alreadyMoved.length} LOT đã hạ sảnh.`;
 
                 Alert.alert(
                     'Đồng bộ hoàn tất',
@@ -298,73 +315,110 @@ export default function WorkScreen() {
                 return;
             }
 
-            // 3. Process remaining moves (Sequential Probe & Move to avoid OOM)
+            // 3. Process remaining moves (Deterministic & Batched)
             const { formatCode } = await import('../lib/locationCodes');
+            const { default: client } = await import('../api/client'); // Need direct client access for positions
+
+            // A. Fetch ALL occupied positions first
+            const resPos = await client.get('/locations/positions');
+            const occupied = resPos.data.items || [];
+            const occupiedSet = new Set(occupied.map((it: any) => it.posCode));
+
             const results: { success: boolean; lotCode: string; error?: string }[] = [];
 
-            // Actually, we must track which Hall spots we have successfully filled in this session 
-            // to avoid trying them again for the next item.
+            // Helper to get next empty spots
+            const getNextEmptyHallSpots = (whId: number, count: number, exclude: Set<string>): string[] => {
+                const spots: string[] = [];
+                // Check positions 1..100 to be safe
+                for (let i = 1; i <= 100; i++) {
+                    const code = formatCode({ warehouse: whId as any, zone: 'S', pos: i, capacity: 1 });
+                    if (!occupiedSet.has(code) && !exclude.has(code)) {
+                        spots.push(code);
+                        if (spots.length >= count) break;
+                    }
+                }
+                return spots;
+            };
+
+            // Group moves by Warehouse to optimize spot finding
+            // But we process in order of pendingMoves to maintain FIFO if important? 
+            // Actually batching by warehouse might be complex if interspersed. 
+            // Let's just process linearly, finding spots as we go.
+            // We need a local 'usedSpots' to track what we assign in this session.
             const usedHallSpots = new Set<string>();
 
-            for (const move of movesToProcess) {
-                const whId = parseInt(move.targetWarehouse);
-                let moveSuccess = false;
-                let errorMsg = 'Kho hết chỗ hoặc lỗi mạng';
+            // B. Process in Batches
+            const BATCH_SIZE = 5;
+            const DELAY_MS = 500;
 
-                // Try positions 1 to 50 in Zone S
-                for (let i = 1; i <= 50; i++) {
-                    const toPos = formatCode({ warehouse: whId as any, zone: 'S', pos: i, capacity: 1 });
+            // Split movesToProcess into chunks
+            for (let i = 0; i < movesToProcess.length; i += BATCH_SIZE) {
+                const batch = movesToProcess.slice(i, i + BATCH_SIZE);
 
-                    if (usedHallSpots.has(toPos)) continue; // Skip spots we just filled
+                // Prepare Promises
+                const batchPromises = batch.map(async (move) => {
+                    let whId = parseInt(move.targetWarehouse);
+                    let toPos = "";
+                    let targetWhFound = 0;
+
+                    // Logic AUTO: Find empty spot in Wh 1 -> 2 -> 3
+                    if (isNaN(whId) || move.targetWarehouse === 'AUTO') {
+                        // Check Wh 1
+                        let spots = getNextEmptyHallSpots(1, 1, usedHallSpots);
+                        if (spots.length > 0) {
+                            toPos = spots[0];
+                            targetWhFound = 1;
+                        } else {
+                            // Check Wh 2
+                            spots = getNextEmptyHallSpots(2, 1, usedHallSpots);
+                            if (spots.length > 0) {
+                                toPos = spots[0];
+                                targetWhFound = 2;
+                            } else {
+                                // Check Wh 3
+                                spots = getNextEmptyHallSpots(3, 1, usedHallSpots);
+                                if (spots.length > 0) {
+                                    toPos = spots[0];
+                                    targetWhFound = 3;
+                                }
+                            }
+                        }
+
+                        if (!toPos) {
+                            return { success: false, lotCode: move.lotCode, error: `Hết chỗ trống ở cả 3 Kho.` };
+                        }
+                    } else {
+                        // Specific Warehouse Logic
+                        const spots = getNextEmptyHallSpots(whId, 1, usedHallSpots);
+
+                        if (spots.length === 0) {
+                            return { success: false, lotCode: move.lotCode, error: `Kho ${whId} hết chỗ Sảnh (đã thử 100 vị trí)` };
+                        }
+                        toPos = spots[0];
+                        targetWhFound = whId;
+                    }
+
+                    usedHallSpots.add(toPos); // Mark as used for next iterations
 
                     try {
                         await exportOrderApi.moveToHall(move.originalPosition, toPos, move.lotCode, move.movedBy);
-                        // If we get here, it succeeded
-                        moveSuccess = true;
-                        usedHallSpots.add(toPos);
-
-                        // Log Immediately to ensure data consistency
-                        try {
-                            // Log removed as per requirement
-                        } catch (logErr) {
-                            console.error('Log error (ignored):', logErr);
-                        }
-
-                        results.push({ success: true, lotCode: move.lotCode });
-                        break; // Stop probing for this item
-
+                        return { success: true, lotCode: move.lotCode };
                     } catch (e: any) {
-                        // Check specific errors
                         const is404 = e.response?.status === 404 || e.message?.includes('404');
-
                         if (is404) {
-                            // Recovered: It was already moved/gone. Treat as success.
-                            moveSuccess = true;
-                            // We don't verify 'toPos' here because we don't know where it went, 
-                            // but we log it as if it went to the intended target or just mark success?
-                            // Issue: if we don't know 'toPos', we can't log 'newPosition' accurately.
-                            // BUT, for the badge, we need to log SOMETHING.
-                            // Let's assume it went to the target we *tried* or just skip logging?
-                            // User wants the badge. So we MUST log.
-                            // However, we shouldn't add to 'usedHallSpots' if it wasn't us who put it there? 
-                            // Actually, safest is to log it with 'toPos' so the badge appears.
-                            try {
-                                // Log removed as per requirement
-                            } catch (logErr) { console.error(logErr); }
-
-                            results.push({ success: true, lotCode: move.lotCode, error: 'Recovered' });
-                            break;
+                            return { success: true, lotCode: move.lotCode, error: 'Recovered' };
                         }
-
-                        // If "Occupied" or other error -> loop continues to next spot
-                        // Ideally we check for "Occupied" message, but assuming any non-404 error 
-                        // implies "Cannot move here", we try next.
-                        errorMsg = e.response?.data?.message || e.message;
+                        return { success: false, lotCode: move.lotCode, error: e.response?.data?.message || e.message || 'Lỗi mạng' };
                     }
-                }
+                });
 
-                if (!moveSuccess) {
-                    results.push({ success: false, lotCode: move.lotCode, error: errorMsg });
+                // Execute Batch
+                const batchResults = await Promise.all(batchPromises);
+                results.push(...batchResults);
+
+                // Delay if there are more batches
+                if (i + BATCH_SIZE < movesToProcess.length) {
+                    await new Promise(resolve => setTimeout(resolve, DELAY_MS));
                 }
             }
 
@@ -373,8 +427,8 @@ export default function WorkScreen() {
             const failedCount = results.filter(r => !r.success).length;
             const successfulLots = results.filter(r => r.success).map(r => r.lotCode);
 
-            // Clear pending valid moves + already exported + already moved ones
-            const allCleared = [...successfulLots, ...alreadyExported, ...alreadyMoved];
+            // Clear pending valid moves + already exported
+            const allCleared = [...successfulLots, ...alreadyExported];
             if (allCleared.length > 0) {
                 setPendingMoves(prev => prev.filter(m => !allCleared.includes(m.lotCode)));
                 const now = new Date().toLocaleString('vi-VN');
@@ -386,7 +440,6 @@ export default function WorkScreen() {
             let msg = '';
             if (successCount > 0) msg += `✅ Hạ sảnh thành công: ${successCount}\n`;
             if (alreadyExported.length > 0) msg += `⚠️ Đã được xuất kho (bỏ qua): ${alreadyExported.length}\n`;
-            if (alreadyMoved.length > 0) msg += `➡️ Đã hạ sảnh (bỏ qua): ${alreadyMoved.length}\n`;
             if (failedCount > 0) msg += `❌ Thất bại: ${failedCount}`;
 
             if (failedCount > 0) {
@@ -434,11 +487,21 @@ export default function WorkScreen() {
 
     // ============ BARCODE SCANNING ============
 
-    const onBarcodeScanned = ({ data }: { data: string }) => {
-        if (scanned || !selectedOrder || showWhModal || isProcessing.current) return;
+    // Helper for Feedback
+    const showFeedback = (message: string, type: 'success' | 'warning' | 'error') => {
+        setScanFeedback({ message, type });
+        // Auto dismiss and reset scan
+        setTimeout(() => {
+            setScanFeedback(null);
+            setScanned(false);
+            isProcessing.current = false;
+        }, 1500); // 1.5s visible time
+    };
+
+    const onBarcodeScanned = async ({ data }: { data: string }) => {
+        if (scanned || !selectedOrder || isProcessing.current) return;
         isProcessing.current = true;
         setScanned(true);
-        Vibration.vibrate();
 
         // Parse URL nếu quét từ QR code web (dạng http://domain/qr/LOT-CODE?...)
         let code = data.trim();
@@ -450,68 +513,47 @@ export default function WorkScreen() {
                 if (qrIndex !== -1 && pathParts[qrIndex + 1]) {
                     code = decodeURIComponent(pathParts[qrIndex + 1]);
                 }
-            } catch (e) {
-                // Fallback: nếu không parse được URL, giữ nguyên code
-            }
+            } catch (e) { }
         }
 
         const lotIndex = selectedOrder.lotCodes.indexOf(code);
         if (lotIndex === -1) {
-            Alert.alert('Lỗi', `Mã LOT "${code}" không thuộc lệnh xuất hiện tại`, [
-                { text: 'OK', onPress: () => { setScanned(false); isProcessing.current = false; } }
-            ]);
+            Vibration.vibrate([0, 50, 50, 50]); // Error vibe
+            showFeedback(`Mã "${code}"\nkhông thuộc lệnh xuất này`, 'error');
             return;
         }
 
         if (movedLots.has(code)) {
-            Alert.alert('Thông báo', 'LOT này đã được hạ sảnh rồi', [
-                { text: 'OK', onPress: () => { setScanned(false); isProcessing.current = false; } }
-            ]);
+            Vibration.vibrate();
+            showFeedback('LOT này đã quét rồi!', 'warning');
             return;
         }
 
-        setTargetLot({ lotCode: code, originalPos: selectedOrder.locations[lotIndex], index: lotIndex });
-        setShowWhModal(true);
-    };
-
-    // ============ CONFIRM WAREHOUSE (OFFLINE MODE) ============
-
-    const handleConfirmWh = async (whId: string) => {
-        if (!targetLot || !selectedOrder) return;
-
+        // AUTO SAVE Logic (Streamlined)
         try {
-            setProcessingWh(true);
             const user = await authService.getUser();
             const userName = user?.username || 'mobile_user';
+            const targetLotInfo = { lotCode: code, originalPos: selectedOrder.locations[lotIndex], index: lotIndex };
 
-            // Create pending move (save locally)
             const newMove: PendingMove = {
                 id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 exportOrderId: selectedOrder.id,
-                lotCode: targetLot.lotCode,
-                originalPosition: targetLot.originalPos,
-                targetWarehouse: whId,
+                lotCode: targetLotInfo.lotCode,
+                originalPosition: targetLotInfo.originalPos,
+                targetWarehouse: 'AUTO', // Auto assign
                 movedBy: userName,
                 timestamp: Date.now(),
             };
 
             setPendingMoves(prev => [...prev, newMove]);
-            setMovedLots(new Set([...movedLots, targetLot.lotCode]));
+            setMovedLots(new Set([...movedLots, targetLotInfo.lotCode]));
 
-            Alert.alert(
-                'Đã ghi nhận (Offline)',
-                `LOT ${targetLot.lotCode} sẽ được hạ sảnh vào Kho ${whId}.\nNhấn "Đồng bộ" khi có mạng để hoàn tất.`
-            );
+            Vibration.vibrate(100); // Success vibe
+            showFeedback(`Đã lưu: ${code}`, 'success');
 
-            setShowWhModal(false);
-            setTargetLot(null);
-        } catch (error: any) {
-            console.error('Confirm WH error:', error);
-            Alert.alert('Lỗi', 'Không thể ghi nhận thao tác');
-        } finally {
-            setProcessingWh(false);
-            setScanned(false);
-            isProcessing.current = false;
+        } catch (e) {
+            console.error(e);
+            showFeedback('Lỗi lưu trữ', 'error');
         }
     };
 
@@ -605,6 +647,25 @@ export default function WorkScreen() {
                                     </Text>
                                 </View>
 
+                                {/* FEEDBACK TOAST OVERLAY */}
+                                {scanFeedback && (
+                                    <View className="absolute inset-x-4 top-1/2 -mt-10 items-center justify-center pointer-events-none z-50">
+                                        <View className={`px-6 py-4 rounded-2xl shadow-lg items-center ${scanFeedback.type === 'success' ? 'bg-emerald-500' :
+                                                scanFeedback.type === 'warning' ? 'bg-amber-500' : 'bg-red-500'
+                                            }`}>
+                                            <Feather
+                                                name={scanFeedback.type === 'success' ? "check-circle" : "alert-triangle"}
+                                                size={32}
+                                                color="white"
+                                                style={{ marginBottom: 8 }}
+                                            />
+                                            <Text className="text-white font-black text-center text-lg shadow-sm">
+                                                {scanFeedback.message}
+                                            </Text>
+                                        </View>
+                                    </View>
+                                )}
+
                                 <TouchableOpacity
                                     onPress={() => setIsCameraActive(!isCameraActive)}
                                     className="absolute bottom-2 left-2 p-2 bg-black/40 rounded-full"
@@ -678,51 +739,7 @@ export default function WorkScreen() {
                     </ScrollView>
                 )}
 
-                {/* Warehouse Modal */}
-                <Modal visible={showWhModal} transparent animationType="fade">
-                    <View className="flex-1 bg-black/60 justify-center px-6">
-                        <View className="bg-white rounded-[40px] p-8 shadow-2xl">
-                            <View className="items-center mb-6">
-                                <View className="w-16 h-16 bg-blue-50 rounded-3xl items-center justify-center mb-4">
-                                    <MaterialCommunityIcons name="warehouse" size={32} color="#2563eb" />
-                                </View>
-                                <Text className="text-zinc-400 font-black text-[10px] uppercase tracking-widest mb-1 text-center">Chọn kho hạ sảnh</Text>
-                                <Text className="text-2xl font-black text-zinc-900 text-center">LOT: {targetLot?.lotCode}</Text>
-                            </View>
 
-                            <Text className="text-zinc-500 text-center mb-6 font-medium text-sm">Thao tác sẽ được lưu offline và đồng bộ sau:</Text>
-
-                            <View className="gap-3">
-                                {[1, 2, 3].map((wh) => (
-                                    <TouchableOpacity
-                                        key={wh}
-                                        onPress={() => handleConfirmWh(wh.toString())}
-                                        disabled={processingWh}
-                                        className="bg-zinc-50 border border-zinc-100 p-5 rounded-3xl flex-row items-center justify-between"
-                                    >
-                                        <Text className="text-zinc-900 font-black text-lg">Kho {wh}</Text>
-                                        <Feather name="chevron-right" size={20} color="#d4d4d8" />
-                                    </TouchableOpacity>
-                                ))}
-                            </View>
-
-                            <TouchableOpacity
-                                onPress={() => { setShowWhModal(false); setTargetLot(null); setScanned(false); isProcessing.current = false; }}
-                                className="mt-6 py-2 items-center"
-                                disabled={processingWh}
-                            >
-                                <Text className="text-zinc-400 font-black text-xs uppercase tracking-widest">Hủy bỏ</Text>
-                            </TouchableOpacity>
-
-                            {processingWh && (
-                                <View className="absolute inset-0 bg-white/90 items-center justify-center rounded-[40px]">
-                                    <ActivityIndicator size="large" color="#2563eb" />
-                                    <Text className="mt-4 font-black text-zinc-900">Đang lưu...</Text>
-                                </View>
-                            )}
-                        </View>
-                    </View>
-                </Modal>
             </View>
         );
     }
