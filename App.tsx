@@ -8,11 +8,12 @@ import ExportScreen from './src/screens/ExportScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import WorkScreen from './src/screens/WorkScreen';
 import LoginScreen from './src/screens/LoginScreen';
+import WarehouseStatusScreen from './src/screens/WarehouseStatusScreen';
 import { authService } from './src/services/auth';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [currentTab, setCurrentTab] = useState<'work' | 'assign' | 'export' | 'settings'>('work');
+  const [currentTab, setCurrentTab] = useState<'work' | 'assign' | 'warehouse' | 'export' | 'settings'>('work');
   const [isChecking, setIsChecking] = useState(true);
 
   // ... (checkAuth unchanged)
@@ -52,6 +53,7 @@ export default function App() {
         <View className="flex-1 bg-zinc-50 relative">
           {currentTab === 'work' && <WorkScreen />}
           {currentTab === 'assign' && <AssignScreen />}
+          {currentTab === 'warehouse' && <WarehouseStatusScreen />}
           {currentTab === 'export' && <ExportScreen />}
           {currentTab === 'settings' && <SettingsScreen onLogout={handleLogout} />}
         </View>
@@ -75,6 +77,16 @@ export default function App() {
             <Feather name="package" size={24} color={currentTab === 'assign' ? '#059669' : '#a1a1aa'} />
             <Text className={`text-[10px] font-black mt-1 ${currentTab === 'assign' ? 'text-emerald-600' : 'text-zinc-400'}`}>
               Gán Vị Trí
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            className="items-center p-2 rounded-lg"
+            onPress={() => setCurrentTab('warehouse')}
+          >
+            <Feather name="grid" size={24} color={currentTab === 'warehouse' ? '#d97706' : '#a1a1aa'} />
+            <Text className={`text-[10px] font-black mt-1 ${currentTab === 'warehouse' ? 'text-amber-600' : 'text-zinc-400'}`}>
+              Kho
             </Text>
           </TouchableOpacity>
 

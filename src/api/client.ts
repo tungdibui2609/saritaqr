@@ -111,4 +111,23 @@ export const lotApi = {
     }
 };
 
+export const warehouseApi = {
+    // Lấy trạng thái kho (Zones, Racks, Levels)
+    getStatus: async (warehouseId: number) => {
+        const response = await client.get(`/warehouse/status?warehouse=${warehouseId}`);
+        return response.data; // ZoneData[]
+    },
+
+    // Lấy bảng màu sản phẩm
+    getColors: async () => {
+        try {
+            const response = await client.get('/settings/colors');
+            return response.data; // Record<string, string>
+        } catch (e) {
+            console.error('getColors error:', e);
+            return {};
+        }
+    }
+};
+
 export default client;
