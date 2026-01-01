@@ -15,6 +15,8 @@ interface ScannedItem {
     quantity: number;
 }
 
+import { Accelerometer } from 'expo-sensors';
+
 export default function AssignScreen() {
     const [items, setItems] = useState<ScannedItem[]>([]);
     const [showScanner, setShowScanner] = useState(false);
@@ -29,17 +31,54 @@ export default function AssignScreen() {
     const [isSyncing, setIsSyncing] = useState(false);
     const isProcessing = useRef(false);
 
+    const [isCameraActive, setIsCameraActive] = useState(true);
+
+    // Smart Input & Shake
+    const inputRef = useRef<TextInput>(null);
+    const [subscription, setSubscription] = useState<any>(null);
+
     // Location Settings
     const [workWarehouse, setWorkWarehouse] = useState<number>(1);
     const [workZone, setWorkZone] = useState<string>('A');
     const [workRow, setWorkRow] = useState<number | null>(null);
     const [workLevel, setWorkLevel] = useState<number | null>(null);
     const [showSettings, setShowSettings] = useState(false);
+    const [smartInput, setSmartInput] = useState('');
 
     useEffect(() => {
         loadOfflineData();
         loadSettings();
+        _subscribe();
+        return () => _unsubscribe();
     }, []);
+
+    const _subscribe = () => {
+        setSubscription(
+            Accelerometer.addListener(accelerometerData => {
+                const { x, y, z } = accelerometerData;
+                const acceleration = Math.sqrt(x * x + y * y + z * z);
+                // Threshold for shake
+                if (acceleration > 2.5) {
+                    handleShakeDetected();
+                }
+            })
+        );
+        Accelerometer.setUpdateInterval(500); // Check every 500ms
+    };
+
+    const _unsubscribe = () => {
+        subscription && subscription.remove();
+        setSubscription(null);
+    };
+
+    const handleShakeDetected = () => {
+        Vibration.vibrate([0, 50]);
+        setIsCameraActive(prev => {
+            const newState = !prev;
+            showToast(newState ? "Đã bật Camera" : "Đã tắt Camera (Tiết kiệm pin)", "info");
+            return newState;
+        });
+    };
 
     useEffect(() => { saveItems(); }, [items]);
     useEffect(() => {
@@ -244,6 +283,77 @@ export default function AssignScreen() {
         } finally { setIsSyncing(false); }
     };
 
+    const handleSmartInput = (text: string) => {
+        setSmartInput(text);
+
+        // Helper: Convert Vietnamese number words to digits
+        const normalizeText = (str: string) => {
+            let s = str.toLowerCase();
+            const map: Record<string, string> = {
+                'một': '1', 'hai': '2', 'ba': '3', 'bốn': '4', 'năm': '5', 'lăm': '5',
+                'sáu': '6', 'bảy': '7', 'tám': '8', 'chín': '9', 'mười': '10'
+            };
+            Object.keys(map).forEach(key => {
+                s = s.replace(new RegExp(key, 'g'), map[key]);
+            });
+            // Compact pattern: AK3D4 -> A K3 D4 (insert spaces to help parsing if needed, but regex handles it)
+            return s;
+        };
+
+        const lower = normalizeText(text);
+
+        // 1. Try to parse compact code first: e.g., "AK3D4" or "A K3 D4" or "AK3D4T1"
+        // Pattern: [Zone][K][Warehouse][D][Row]([T][Level])?
+        const compactMatch = lower.match(/([a-z])\s*k(\d+)\s*d(\d+)(?:\s*t(\d+))?/i);
+        if (compactMatch) {
+            const z = compactMatch[1].toUpperCase();
+            const w = parseInt(compactMatch[2]);
+            const r = parseInt(compactMatch[3]);
+            const l = compactMatch[4] ? parseInt(compactMatch[4]) : null;
+
+            if (['A', 'B', 'S'].includes(z)) setWorkZone(z);
+            if ([1, 2, 3].includes(w)) setWorkWarehouse(w);
+            setWorkRow(r);
+            if (l !== null) setWorkLevel(l);
+        }
+
+        // 2. Fallback / Additional Parsing (e.g. "Tầng X" or standard "Kho X")
+
+        // Parse Warehouse (Kho 1, Kho 2...) - Flexible: kho, ko, khô
+        // Only run if not already set by compact match (or allows override)
+        if (!compactMatch) {
+            const warehouseMatch = lower.match(/(?:kho|khô|ko)\s*(\d+)/);
+            if (warehouseMatch && warehouseMatch[1]) {
+                const w = parseInt(warehouseMatch[1]);
+                if ([1, 2, 3].includes(w)) setWorkWarehouse(w);
+            }
+
+            // Parse Zone (Khu A, Khu B, Sảnh) - Flexible: khu, ku
+            const zoneMatch = lower.match(/(?:khu|ku)\s*([a-zs])/);
+            if (zoneMatch && zoneMatch[1]) {
+                const z = zoneMatch[1].toUpperCase();
+                if (['A', 'B', 'S'].includes(z)) setWorkZone(z);
+            } else if (lower.includes('sảnh')) {
+                setWorkZone('S');
+            }
+
+            // Parse Row (Dãy 1, Dãy 2...) - Flexible: dãy, day, dạy, dai
+            const rowMatch = lower.match(/(?:dãy|day|dạy|dai)\s*(\d+)/);
+            if (rowMatch && rowMatch[1]) {
+                const r = parseInt(rowMatch[1]);
+                setWorkRow(r);
+            }
+        }
+
+        // Parse Level (Tầng 1, Tầng 2...) - Flexible: tầng, tang, tan
+        // Always check for level as it's often separate (e.g. "AK3D4 Tầng 2")
+        const levelMatch = lower.match(/(?:tầng|tang|tan|tần)\s*(\d+)/);
+        if (levelMatch && levelMatch[1]) {
+            const l = parseInt(levelMatch[1]);
+            setWorkLevel(l);
+        }
+    };
+
     const pendingCount = items.filter(i => !i.synced && i.position.trim()).length;
     const syncedCount = items.filter(i => i.synced).length;
 
@@ -319,14 +429,25 @@ export default function AssignScreen() {
                 <View className="px-6 pt-6">
                     {/* Camera Box - Premium Style */}
                     <View className="h-72 w-full bg-black relative rounded-xl overflow-hidden shadow-lg border-4 border-white mb-6">
-                        <CameraView
-                            style={StyleSheet.absoluteFillObject}
-                            facing="back"
-                            onBarcodeScanned={handleScan}
-                            barcodeScannerSettings={{ barcodeTypes: ['qr', 'code128'] }}
-                        />
+                        {isCameraActive ? (
+                            <CameraView
+                                style={StyleSheet.absoluteFillObject}
+                                facing="back"
+                                onBarcodeScanned={handleScan}
+                                barcodeScannerSettings={{ barcodeTypes: ['qr', 'code128'] }}
+                            />
+                        ) : (
+                            <View className="flex-1 items-center justify-center bg-zinc-900">
+                                <Feather name="video-off" size={48} color="#52525b" />
+                                <Text className="text-zinc-500 font-bold mt-4">Camera đang tắt</Text>
+                                <Text className="text-zinc-600 text-xs mt-1">Lắc máy để bật lại</Text>
+                            </View>
+                        )}
+
                         <View className="absolute bottom-2 right-2 bg-black/60 px-2 py-1 rounded">
-                            <Text className="text-white text-[10px] font-medium">Live Camera</Text>
+                            <Text className={`text-[10px] font-medium ${isCameraActive ? 'text-green-400' : 'text-zinc-500'}`}>
+                                {isCameraActive ? 'LIVE' : 'PAUSED'}
+                            </Text>
                         </View>
                         <TouchableOpacity
                             onPress={() => setShowScanner(true)}
@@ -336,11 +457,19 @@ export default function AssignScreen() {
                         </TouchableOpacity>
                         {/* Location Badge */}
                         <View className="absolute top-2 left-2 bg-black/60 px-3 py-1.5 rounded-xl flex-row items-center gap-2">
-                            <Feather name="map-pin" size={12} color="#34d399" />
+                            <Feather name="map-pin" size={12} color={isCameraActive ? "#34d399" : "#71717a"} />
                             <Text className="text-white text-[10px] font-black">
                                 K{workWarehouse} • {workZone}{workRow ? `-${workRow}` : ''}{workLevel ? `-T${workLevel}` : ''}
                             </Text>
                         </View>
+
+                        {/* Toggle Button Overlay */}
+                        <TouchableOpacity
+                            onPress={() => setIsCameraActive(!isCameraActive)}
+                            className="absolute bottom-2 left-2 p-2 bg-black/40 rounded-full"
+                        >
+                            <Feather name={isCameraActive ? "pause" : "play"} size={16} color="white" />
+                        </TouchableOpacity>
                     </View>
 
                     {/* Items List */}
@@ -449,27 +578,57 @@ export default function AssignScreen() {
                         </View>
 
                         <View className="gap-4 mb-6">
-                            <Dropdown
-                                label="Kho"
-                                value={workWarehouse}
-                                options={[
-                                    { label: 'Kho 1', value: 1 },
-                                    { label: 'Kho 2', value: 2 },
-                                    { label: 'Kho 3', value: 3 },
-                                ]}
-                                onSelect={(v) => setWorkWarehouse(v)}
-                            />
-                            <Dropdown
-                                label="Khu"
-                                value={workZone}
-                                options={[
-                                    { label: 'Khu A', value: 'A' },
-                                    { label: 'Khu B', value: 'B' },
-                                    { label: 'Sảnh', value: 'S' },
-                                ]}
-                                onSelect={(v) => setWorkZone(v)}
-                            />
-                            {workZone !== 'S' && (
+                            {/* Smart Voice Input - Compact Design */}
+                            <View>
+                                <Text className="text-zinc-500 text-xs font-bold mb-1.5 ml-1 uppercase tracking-wider">Nhập nhanh / Giọng nói</Text>
+                                <View className="flex-row items-center border border-zinc-200 rounded-2xl px-3 bg-zinc-50 focus:border-blue-500 focus:bg-white transition-colors h-12">
+                                    <View className="mr-2">
+                                        <Feather name="mic" size={18} color="#2563eb" />
+                                    </View>
+                                    <TextInput
+                                        ref={inputRef}
+                                        placeholder="VD: Kho 1 Khu A Dãy 2..."
+                                        value={smartInput}
+                                        onChangeText={handleSmartInput}
+                                        className="flex-1 font-medium text-zinc-900 text-base h-full"
+                                        placeholderTextColor="#a1a1aa"
+                                    />
+                                    {smartInput.length > 0 && (
+                                        <TouchableOpacity onPress={() => setSmartInput('')} className="p-1 bg-zinc-200 rounded-full">
+                                            <Feather name="x" size={12} color="#71717a" />
+                                        </TouchableOpacity>
+                                    )}
+                                </View>
+                                <Text className="text-[10px] text-zinc-400 mt-1.5 ml-1">
+                                    Nhấn mic trên bàn phím để nói.
+                                </Text>
+                            </View>
+                        </View>
+
+                        <View className="h-[1px] bg-zinc-100 my-2" />
+
+                        <Dropdown
+                            label="Kho"
+                            value={workWarehouse}
+                            options={[
+                                { label: 'Kho 1', value: 1 },
+                                { label: 'Kho 2', value: 2 },
+                                { label: 'Kho 3', value: 3 },
+                            ]}
+                            onSelect={(v) => setWorkWarehouse(v)}
+                        />
+                        <Dropdown
+                            label="Khu"
+                            value={workZone}
+                            options={[
+                                { label: 'Khu A', value: 'A' },
+                                { label: 'Khu B', value: 'B' },
+                                { label: 'Sảnh', value: 'S' },
+                            ]}
+                            onSelect={(v) => setWorkZone(v)}
+                        />
+                        {
+                            workZone !== 'S' && (
                                 <Dropdown
                                     label="Dãy"
                                     value={workRow}
@@ -481,8 +640,10 @@ export default function AssignScreen() {
                                     onSelect={(v) => setWorkRow(v)}
                                     onClear={() => setWorkRow(null)}
                                 />
-                            )}
-                            {workZone !== 'S' && (
+                            )
+                        }
+                        {
+                            workZone !== 'S' && (
                                 <Dropdown
                                     label="Tầng"
                                     value={workLevel}
@@ -494,16 +655,17 @@ export default function AssignScreen() {
                                     onSelect={(v) => setWorkLevel(v)}
                                     onClear={() => setWorkLevel(null)}
                                 />
-                            )}
-                        </View>
-
-                        <TouchableOpacity
-                            onPress={() => setShowSettings(false)}
-                            className="bg-zinc-900 py-4 rounded-2xl items-center"
-                        >
-                            <Text className="text-white font-black">Đóng</Text>
-                        </TouchableOpacity>
+                            )
+                        }
                     </View>
+
+
+                    <TouchableOpacity
+                        onPress={() => setShowSettings(false)}
+                        className="w-full bg-zinc-900 py-4 rounded-2xl items-center"
+                    >
+                        <Text className="text-white font-black">Đóng</Text>
+                    </TouchableOpacity>
                 </View>
             </Modal>
 
@@ -528,17 +690,20 @@ export default function AssignScreen() {
                 </View>
             </Modal>
 
-            {/* Area Full Alert Modal */}
-            <Modal transparent visible={showFullAlert} animationType="fade">
-                <View className="flex-1 bg-black/60 justify-center items-center p-6">
-                    <View className="bg-white rounded-[32px] w-full max-w-sm p-6 items-center shadow-2xl">
-                        <View className="w-16 h-16 bg-amber-100 rounded-3xl items-center justify-center mb-4">
-                            <Feather name="alert-triangle" size={32} color="#d97706" />
+            {/* Full Alert Modal */}
+            <Modal visible={showFullAlert} transparent animationType="fade">
+                <View className="flex-1 bg-black/60 justify-center px-6">
+                    <View className="bg-white rounded-[32px] p-6 shadow-2xl">
+                        <View className="items-center mb-6">
+                            <View className="w-14 h-14 bg-rose-50 rounded-2xl items-center justify-center mb-3">
+                                <Feather name="alert-triangle" size={28} color="#ef4444" />
+                            </View>
+                            <Text className="text-xl font-black text-zinc-900 text-center">Vị trí làm việc chưa đầy đủ</Text>
+                            <Text className="text-zinc-500 text-center mt-2">
+                                Vui lòng chọn đầy đủ thông tin vị trí làm việc để tiếp tục.
+                            </Text>
                         </View>
-                        <Text className="text-xl font-black text-zinc-900 mb-2">Khu Vực Đầy!</Text>
-                        <Text className="text-center text-zinc-500 mb-6 leading-6">
-                            Vị trí hiện tại đã hết chỗ trống (PL1-PL8).{'\n'}Vui lòng chọn khu vực khác.
-                        </Text>
+
                         <View className="bg-zinc-50 border border-zinc-100 rounded-2xl p-4 w-full mb-6">
                             <View className="flex-row justify-between py-2 border-b border-zinc-200">
                                 <Text className="text-zinc-500">Kho</Text>

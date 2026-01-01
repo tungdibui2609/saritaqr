@@ -24,6 +24,8 @@ interface LotHeader {
     qc?: string;
 }
 
+import { Accelerometer } from 'expo-sensors';
+
 export default function ExportScreen() {
     const [permission, requestPermission] = useCameraPermissions();
     const [showScanner, setShowScanner] = useState(false);
@@ -38,9 +40,41 @@ export default function ExportScreen() {
     const toastTimer = useRef<NodeJS.Timeout | null>(null);
     const isProcessing = useRef(false);
 
+    // Camera Toggle State
+    const [isCameraActive, setIsCameraActive] = useState(true);
+    const [subscription, setSubscription] = useState<any>(null);
+
     useEffect(() => {
-        // No animation logic needed here anymore
+        _subscribe();
+        return () => _unsubscribe();
     }, []);
+
+    const _subscribe = () => {
+        setSubscription(
+            Accelerometer.addListener(accelerometerData => {
+                const { x, y, z } = accelerometerData;
+                const acceleration = Math.sqrt(x * x + y * y + z * z);
+                if (acceleration > 2.5) {
+                    handleShakeDetected();
+                }
+            })
+        );
+        Accelerometer.setUpdateInterval(500);
+    };
+
+    const _unsubscribe = () => {
+        subscription && subscription.remove();
+        setSubscription(null);
+    };
+
+    const handleShakeDetected = () => {
+        Vibration.vibrate([0, 50]);
+        setIsCameraActive(prev => {
+            const newState = !prev;
+            showToast(newState ? "Đã bật Camera" : "Đã tắt Camera (Tiết kiệm pin)", "info");
+            return newState;
+        });
+    };
 
     const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
         if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -206,14 +240,33 @@ export default function ExportScreen() {
                     <View className="px-6 pt-6">
                         {/* Embedded Mini Camera (Now at context top) */}
                         <View className="h-80 w-full bg-black relative rounded-xl overflow-hidden shadow-sm border-4 border-white">
-                            <CameraView
-                                style={StyleSheet.absoluteFillObject}
-                                facing="back"
-                                onBarcodeScanned={handleScan}
-                            />
+                            {isCameraActive ? (
+                                <CameraView
+                                    style={StyleSheet.absoluteFillObject}
+                                    facing="back"
+                                    onBarcodeScanned={handleScan}
+                                />
+                            ) : (
+                                <View className="flex-1 items-center justify-center bg-zinc-900">
+                                    <Feather name="video-off" size={48} color="#52525b" />
+                                    <Text className="text-zinc-500 font-bold mt-4">Camera đang tắt</Text>
+                                    <Text className="text-zinc-600 text-xs mt-1">Lắc máy để bật lại</Text>
+                                </View>
+                            )}
+
                             <View className="absolute bottom-2 right-2 bg-black/60 px-2 py-1 rounded">
-                                <Text className="text-white text-xs">Live Camera</Text>
+                                <Text className={`text-[10px] font-medium ${isCameraActive ? 'text-green-400' : 'text-zinc-500'}`}>
+                                    {isCameraActive ? 'LIVE' : 'PAUSED'}
+                                </Text>
                             </View>
+
+                            <TouchableOpacity
+                                onPress={() => setIsCameraActive(!isCameraActive)}
+                                className="absolute bottom-2 left-2 p-2 bg-black/40 rounded-full"
+                            >
+                                <Feather name={isCameraActive ? "pause" : "play"} size={16} color="white" />
+                            </TouchableOpacity>
+
                             <TouchableOpacity
                                 onPress={() => setShowScanner(true)}
                                 className="absolute top-2 right-2 p-2 bg-black/40 rounded-full"

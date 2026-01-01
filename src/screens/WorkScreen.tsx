@@ -6,6 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { exportOrderApi } from '../api/client';
 import { authService } from '../services/auth';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Accelerometer } from 'expo-sensors';
 import client from '../api/client';
 import ExportStatisticsView from '../components/ExportStatisticsView';
 
@@ -61,6 +62,41 @@ export default function WorkScreen() {
     const [showWhModal, setShowWhModal] = useState(false);
     const [targetLot, setTargetLot] = useState<{ lotCode: string, originalPos: string, index: number } | null>(null);
     const [processingWh, setProcessingWh] = useState(false);
+
+    // Camera Toggle State
+    const [isCameraActive, setIsCameraActive] = useState(true);
+    const [subscription, setSubscription] = useState<any>(null);
+
+    useEffect(() => {
+        _subscribe();
+        return () => _unsubscribe();
+    }, []);
+
+    const _subscribe = () => {
+        setSubscription(
+            Accelerometer.addListener(accelerometerData => {
+                const { x, y, z } = accelerometerData;
+                const acceleration = Math.sqrt(x * x + y * y + z * z);
+                if (acceleration > 2.5) {
+                    handleShakeDetected();
+                }
+            })
+        );
+        Accelerometer.setUpdateInterval(500);
+    };
+
+    const _unsubscribe = () => {
+        subscription && subscription.remove();
+        setSubscription(null);
+    };
+
+    const handleShakeDetected = () => {
+        Vibration.vibrate([0, 50]);
+        setIsCameraActive(prev => {
+            const newState = !prev;
+            return newState;
+        });
+    };
 
     // Load offline data on mount
     useEffect(() => {
@@ -581,40 +617,42 @@ export default function WorkScreen() {
                         <View className="px-6 pt-6">
                             {/* Camera Box */}
                             <View className="h-80 w-full bg-black relative rounded-xl overflow-hidden shadow-sm border-4 border-white mb-6">
-                                {isScanning ? (
-                                    <>
-                                        <CameraView
-                                            style={StyleSheet.absoluteFillObject}
-                                            facing="back"
-                                            onBarcodeScanned={scanned ? undefined : onBarcodeScanned}
-                                            barcodeScannerSettings={{
-                                                barcodeTypes: ['qr', 'code128'],
-                                            }}
-                                        />
-                                        <View className="absolute bottom-2 right-2 bg-black/60 px-2 py-1 rounded">
-                                            <Text className="text-white text-[10px] font-medium">Live Camera</Text>
-                                        </View>
-                                        <View className="absolute top-2 right-2 p-2 bg-black/40 rounded-full">
-                                            <Feather name="maximize-2" size={20} color="white" />
-                                        </View>
-                                    </>
+                                {isCameraActive ? (
+                                    <CameraView
+                                        style={StyleSheet.absoluteFillObject}
+                                        facing="back"
+                                        onBarcodeScanned={scanned ? undefined : onBarcodeScanned}
+                                        barcodeScannerSettings={{
+                                            barcodeTypes: ['qr', 'code128'],
+                                        }}
+                                    />
                                 ) : (
                                     <View className="flex-1 items-center justify-center bg-zinc-900">
-                                        <View className="w-20 h-20 bg-zinc-800 rounded-full items-center justify-center mb-4">
-                                            <Feather name="camera-off" size={32} color="#71717a" />
-                                        </View>
-                                        <Text className="text-zinc-500 font-medium mb-6 text-center px-10">
-                                            Camera đang tắt để tiết kiệm pin
-                                        </Text>
-                                        <TouchableOpacity
-                                            onPress={() => setIsScanning(true)}
-                                            className="bg-blue-600 px-6 py-3 rounded-2xl flex-row items-center gap-2"
-                                        >
-                                            <Feather name="camera" size={20} color="white" />
-                                            <Text className="text-white font-bold">Bắt đầu quét</Text>
-                                        </TouchableOpacity>
+                                        <Feather name="video-off" size={48} color="#52525b" />
+                                        <Text className="text-zinc-500 font-bold mt-4">Camera đang tắt</Text>
+                                        <Text className="text-zinc-600 text-xs mt-1">Lắc máy để bật lại</Text>
                                     </View>
                                 )}
+
+                                <View className="absolute bottom-2 right-2 bg-black/60 px-2 py-1 rounded">
+                                    <Text className={`text-[10px] font-medium ${isCameraActive ? 'text-green-400' : 'text-zinc-500'}`}>
+                                        {isCameraActive ? 'LIVE' : 'PAUSED'}
+                                    </Text>
+                                </View>
+
+                                <TouchableOpacity
+                                    onPress={() => setIsCameraActive(!isCameraActive)}
+                                    className="absolute bottom-2 left-2 p-2 bg-black/40 rounded-full"
+                                >
+                                    <Feather name={isCameraActive ? "pause" : "play"} size={16} color="white" />
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    onPress={() => setIsScanning(true)} // Keep maximization or just default
+                                    className="absolute top-2 right-2 p-2 bg-black/40 rounded-full"
+                                >
+                                    <Feather name="maximize-2" size={20} color="white" />
+                                </TouchableOpacity>
                             </View>
 
                             {/* Instruction */}
