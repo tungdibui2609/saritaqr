@@ -8,8 +8,11 @@ import WarehouseStats from '../components/warehouse/WarehouseStats';
 import SmartRackList from '../components/warehouse/SmartRackList';
 import clsx from 'clsx';
 import { Feather } from '@expo/vector-icons';
+import { AppFooter } from '../components/AppFooter';
+import { useDataSync } from '../hooks/useDataSync';
 
 export default function WarehouseStatusScreen() {
+    const { isDownloading: isDownloadingGlobal, lastUpdated, syncAllData } = useDataSync();
     const [selectedWarehouse, setSelectedWarehouse] = useState(1);
     const [zones, setZones] = useState<ZoneData[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -76,37 +79,56 @@ export default function WarehouseStatusScreen() {
     return (
         <View className="flex-1 bg-zinc-50">
             {/* Header */}
-            <View className="bg-white border-b border-zinc-200 shadow-sm z-10">
+            <View className="bg-white border-b border-zinc-200 shadow-sm z-10 pt-10">
                 <View className="px-4 py-3 flex-row justify-between items-center">
                     <View>
-                        <Text className="text-xl font-bold text-zinc-900">Trạng thái kho</Text>
+                        <Text className="text-[10px] font-black text-blue-600 uppercase tracking-[2px]">SARITA WORKSPACE</Text>
+                        <Text className="text-2xl font-black text-zinc-900 tracking-tight">Trạng Thái Kho</Text>
+                        <Text className="text-[10px] font-medium text-zinc-400 mt-0.5">
+                            Cập nhật: {lastUpdated || 'Chưa đồng bộ'}
+                        </Text>
                         {isOffline && (
-                            <View className="flex-row items-center gap-1 mt-0.5">
+                            <View className="flex-row items-center gap-1 mt-1">
                                 <Feather name="wifi-off" size={10} color="#f97316" />
                                 <Text className="text-[10px] text-orange-500 font-medium">Chế độ Offline</Text>
                             </View>
                         )}
                     </View>
 
-                    {/* Warehouse Selector */}
-                    <View className="flex-row bg-zinc-100 rounded-lg p-1">
-                        {[1, 2, 3].map((id) => (
-                            <TouchableOpacity
-                                key={id}
-                                onPress={() => setSelectedWarehouse(id)}
-                                className={clsx(
-                                    "px-3 py-1.5 rounded-md",
-                                    selectedWarehouse === id ? "bg-white shadow-sm" : ""
-                                )}
-                            >
-                                <Text className={clsx(
-                                    "text-xs font-bold",
-                                    selectedWarehouse === id ? "text-zinc-900" : "text-zinc-500"
-                                )}>
-                                    Kho {id}
-                                </Text>
-                            </TouchableOpacity>
-                        ))}
+                    <View className="flex-row items-center gap-2">
+                        {/* Global Download Button */}
+                        <TouchableOpacity
+                            onPress={syncAllData}
+                            disabled={isDownloadingGlobal}
+                            className="bg-blue-600 w-9 h-9 items-center justify-center rounded-xl shadow-sm shadow-blue-200"
+                        >
+                            {isDownloadingGlobal ? (
+                                <ActivityIndicator size="small" color="white" />
+                            ) : (
+                                <Feather name="download-cloud" size={16} color="white" />
+                            )}
+                        </TouchableOpacity>
+
+                        {/* Warehouse Selector */}
+                        <View className="flex-row bg-zinc-100 rounded-lg p-1">
+                            {[1, 2, 3].map((id) => (
+                                <TouchableOpacity
+                                    key={id}
+                                    onPress={() => setSelectedWarehouse(id)}
+                                    className={clsx(
+                                        "px-2.5 py-1.5 rounded-md",
+                                        selectedWarehouse === id ? "bg-white shadow-sm" : ""
+                                    )}
+                                >
+                                    <Text className={clsx(
+                                        "text-xs font-bold",
+                                        selectedWarehouse === id ? "text-zinc-900" : "text-zinc-500"
+                                    )}>
+                                        Kho {id}
+                                    </Text>
+                                </TouchableOpacity>
+                            ))}
+                        </View>
                     </View>
                 </View>
 
@@ -161,6 +183,9 @@ export default function WarehouseStatusScreen() {
 
                 {/* Bottom Spacer */}
                 <View className="h-20" />
+                {/* Bottom Spacer */}
+                <View className="h-8" />
+                <AppFooter />
             </ScrollView>
         </View>
     );

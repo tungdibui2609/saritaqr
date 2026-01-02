@@ -24,9 +24,14 @@ interface LotHeader {
     qc?: string;
 }
 
+import { AppFooter } from '../components/AppFooter';
 import { Accelerometer } from 'expo-sensors';
+import { useDataSync } from '../hooks/useDataSync';
+import { useOfflineLookup } from '../hooks/useOfflineLookup';
 
 export default function ExportScreen() {
+    const { isDownloading: isDownloadingGlobal, lastUpdated, syncAllData } = useDataSync();
+    const { isReady: isOfflineReady, lookupLot } = useOfflineLookup();
     const [permission, requestPermission] = useCameraPermissions();
     const [showScanner, setShowScanner] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -103,8 +108,30 @@ export default function ExportScreen() {
                 setHeader(null);
             }
         } catch (e: any) {
-            console.error(e);
-            showToast('Lỗi khi tải chi tiết LOT', 'error');
+            console.log("Online fetch failed, trying offline...", e);
+            if (isOfflineReady) {
+                const offlineData = lookupLot(code);
+                if (offlineData) {
+                    setLotCode(code);
+                    // Construct a single line item from offline data
+                    setLines([{
+                        lotCode: code,
+                        productCode: offlineData.productCode,
+                        productName: offlineData.productName,
+                        quantity: offlineData.quantity,
+                        unit: offlineData.unit,
+                        exportQty: '', // Force manual entry for accuracy
+                    }]);
+                    setHeader(null);
+                    showToast(`Đã tìm thấy LOT (Offline): ${code}`, 'success');
+                } else {
+                    showToast(`Không tìm thấy LOT: ${code} (Offline)`, 'error');
+                    setLotCode(null);
+                    setLines([]);
+                }
+            } else {
+                showToast("Lỗi kết nối và chưa có dữ liệu Offline", "error");
+            }
         } finally {
             setLoading(false);
         }
@@ -216,23 +243,40 @@ export default function ExportScreen() {
             {/* Super Premium Header */}
             <View className="bg-white pt-12 pb-4 px-6 border-b border-zinc-100 flex-row justify-between items-center shadow-sm z-20">
                 <View>
-                    <Text className="text-[10px] font-black text-emerald-600 uppercase tracking-[2px]">Sarita QR • Scan</Text>
+                    <Text className="text-[10px] font-black text-blue-600 uppercase tracking-[2px]">SARITA WORKSPACE</Text>
                     <Text className="font-black text-2xl text-zinc-900 tracking-tight">Xuất Kho</Text>
+                    <Text className="text-[10px] font-medium text-zinc-400 mt-0.5">
+                        Cập nhật: {lastUpdated || 'Chưa đồng bộ'}
+                    </Text>
                 </View>
-                <TouchableOpacity
-                    onPress={() => setShowScanner(true)}
-                    className="overflow-hidden rounded-2xl shadow-lg shadow-emerald-500/30"
-                >
-                    <LinearGradient
-                        colors={['#059669', '#10b981']}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={{ paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', gap: 8, alignItems: 'center' }}
+                <View className="flex-row gap-2">
+                    <TouchableOpacity
+                        onPress={syncAllData}
+                        disabled={isDownloadingGlobal}
+                        className="bg-blue-600 w-10 h-10 items-center justify-center rounded-xl shadow-sm shadow-blue-200"
                     >
-                        <MaterialCommunityIcons name="qrcode-scan" size={18} color="white" />
-                        <Text className="text-white font-black text-xs">QUÉT MÃ</Text>
-                    </LinearGradient>
-                </TouchableOpacity>
+                        {isDownloadingGlobal ? (
+                            <ActivityIndicator size="small" color="white" />
+                        ) : (
+                            <Feather name="download-cloud" size={18} color="white" />
+                        )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                        onPress={() => setShowScanner(true)}
+                        className="overflow-hidden rounded-xl shadow-lg shadow-emerald-500/30"
+                    >
+                        <LinearGradient
+                            colors={['#059669', '#10b981']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={{ paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', gap: 8, alignItems: 'center', height: 40 }}
+                        >
+                            <MaterialCommunityIcons name="qrcode-scan" size={18} color="white" />
+                            <Text className="text-white font-black text-xs">QUÉT</Text>
+                        </LinearGradient>
+                    </TouchableOpacity>
+                </View>
             </View>
 
             <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 120 }} keyboardShouldPersistTaps="handled">
@@ -420,6 +464,7 @@ export default function ExportScreen() {
                         </View>
                     </View>
                 )}
+                <AppFooter />
             </ScrollView>
 
             {/* Float Confirm Button */}

@@ -39,7 +39,11 @@ const STORAGE_KEYS = {
     LAST_SYNC: 'work_last_sync',
 };
 
+import { useDataSync } from '../hooks/useDataSync';
+import { AppFooter } from '../components/AppFooter';
+
 export default function WorkScreen() {
+    const { isDownloading: isDownloadingGlobal, lastUpdated, syncAllData } = useDataSync();
     const [orders, setOrders] = useState<ExportOrder[]>([]);
     const [loading, setLoading] = useState(true);
     const [selectedOrder, setSelectedOrder] = useState<ExportOrder | null>(null);
@@ -572,19 +576,40 @@ export default function WorkScreen() {
         return (
             <View className="flex-1 bg-zinc-50">
                 {/* Header with Tabs */}
-                <View className="bg-white pt-12 pb-0 px-0 border-b border-zinc-200 shadow-sm z-20">
+                <View className="bg-white pt-10 pb-0 px-0 border-b border-zinc-200 shadow-sm z-20">
                     <View className="px-5 pb-4 flex-row justify-between items-center">
                         <View className="flex-row items-center">
                             <TouchableOpacity onPress={() => setSelectedOrder(null)} className="mr-3">
                                 <Feather name="chevron-left" size={28} color="#18181b" />
                             </TouchableOpacity>
                             <View>
-                                <Text className="text-[10px] font-black text-blue-600 uppercase tracking-[2px]">SARITA • WORK</Text>
-                                <Text className="font-black text-2xl text-zinc-900 tracking-tight">Hạ Sảnh</Text>
+                                <Text className="text-[10px] font-black text-blue-600 uppercase tracking-[2px]">SARITA WORKSPACE</Text>
+                                <Text className="font-black text-2xl text-zinc-900 tracking-tight">Công Việc</Text>
+                                <Text className="text-[10px] font-medium text-zinc-400 mt-0.5">
+                                    Cập nhật: {lastUpdated || 'Chưa đồng bộ'}
+                                </Text>
                             </View>
                         </View>
-                        <View className="bg-zinc-100 px-3 py-1 rounded-lg border border-zinc-200">
-                            <Text className="text-zinc-900 font-black text-xs">{selectedOrder.id}</Text>
+
+                        <View className="flex-row gap-2">
+                            <TouchableOpacity
+                                onPress={syncAllData}
+                                disabled={isDownloadingGlobal}
+                                className="bg-blue-600 px-3 py-2 rounded-xl flex-row items-center gap-1.5 shadow-sm shadow-blue-200"
+                            >
+                                {isDownloadingGlobal ? (
+                                    <ActivityIndicator size="small" color="white" />
+                                ) : (
+                                    <Feather name="download-cloud" size={14} color="white" />
+                                )}
+                                <Text className="text-white font-bold text-xs">
+                                    {isDownloadingGlobal ? 'Đang tải' : 'Tải'}
+                                </Text>
+                            </TouchableOpacity>
+
+                            <View className="bg-zinc-100 px-3 py-2 rounded-xl border border-zinc-200 justify-center">
+                                <Text className="text-zinc-900 font-black text-xs">{selectedOrder.id}</Text>
+                            </View>
                         </View>
                     </View>
 
@@ -651,7 +676,7 @@ export default function WorkScreen() {
                                 {scanFeedback && (
                                     <View className="absolute inset-x-4 top-1/2 -mt-10 items-center justify-center pointer-events-none z-50">
                                         <View className={`px-6 py-4 rounded-2xl shadow-lg items-center ${scanFeedback.type === 'success' ? 'bg-emerald-500' :
-                                                scanFeedback.type === 'warning' ? 'bg-amber-500' : 'bg-red-500'
+                                            scanFeedback.type === 'warning' ? 'bg-amber-500' : 'bg-red-500'
                                             }`}>
                                             <Feather
                                                 name={scanFeedback.type === 'success' ? "check-circle" : "alert-triangle"}
@@ -853,6 +878,7 @@ export default function WorkScreen() {
                         );
                     })
                 )}
+                <AppFooter />
             </ScrollView>
         </View>
     );

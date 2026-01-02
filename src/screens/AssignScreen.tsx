@@ -16,8 +16,11 @@ interface ScannedItem {
 }
 
 import { Accelerometer } from 'expo-sensors';
+import { AppFooter } from '../components/AppFooter';
+import { useDataSync } from '../hooks/useDataSync';
 
 export default function AssignScreen() {
+    const { isDownloading: isDownloadingGlobal, lastUpdated, syncAllData } = useDataSync();
     const [items, setItems] = useState<ScannedItem[]>([]);
     const [showScanner, setShowScanner] = useState(false);
     const [showFullAlert, setShowFullAlert] = useState(false);
@@ -377,10 +380,13 @@ export default function AssignScreen() {
         <View className="flex-1 bg-zinc-50">
             {/* Premium Header */}
             <View className="bg-white pt-14 pb-4 px-6 border-b border-zinc-100 shadow-sm z-20">
-                <Text className="text-[10px] font-black text-blue-600 uppercase tracking-[2px]">SARITA • SCAN</Text>
+                <Text className="text-[10px] font-black text-blue-600 uppercase tracking-[2px]">SARITA WORKSPACE</Text>
                 <View className="flex-row justify-between items-end mt-1">
                     <View>
                         <Text className="font-black text-3xl text-zinc-900 tracking-tighter">Gán Vị Trí</Text>
+                        <Text className="text-[10px] font-medium text-zinc-400 mt-0.5">
+                            Cập nhật: {lastUpdated || 'Chưa đồng bộ'}
+                        </Text>
                         {items.length > 0 && (
                             <Text className="text-zinc-400 text-[10px] font-medium mt-1">
                                 {pendingCount} chờ sync • {syncedCount} đã sync
@@ -388,6 +394,22 @@ export default function AssignScreen() {
                         )}
                     </View>
                     <View className="flex-row gap-2">
+                        {/* Global Download Button */}
+                        <TouchableOpacity
+                            onPress={syncAllData}
+                            disabled={isDownloadingGlobal}
+                            className="bg-blue-600 px-3 py-2.5 rounded-xl flex-row items-center gap-2 shadow-sm shadow-blue-200"
+                        >
+                            {isDownloadingGlobal ? (
+                                <ActivityIndicator size="small" color="white" />
+                            ) : (
+                                <Feather name="download-cloud" size={16} color="white" />
+                            )}
+                            <Text className="text-white font-bold text-xs">
+                                {isDownloadingGlobal ? 'Đang tải' : 'Tải'}
+                            </Text>
+                        </TouchableOpacity>
+
                         {/* Settings Button */}
                         <TouchableOpacity
                             onPress={() => setShowSettings(true)}
@@ -406,7 +428,7 @@ export default function AssignScreen() {
                             </TouchableOpacity>
                         )}
 
-                        {/* Sync Button */}
+                        {/* Local Sync Button (Upload) */}
                         <TouchableOpacity
                             onPress={handleSync}
                             disabled={isSyncing || pendingCount === 0}
@@ -564,6 +586,7 @@ export default function AssignScreen() {
                         </View>
                     )}
                 </View>
+                <AppFooter />
             </ScrollView>
 
             {/* Settings Modal */}
