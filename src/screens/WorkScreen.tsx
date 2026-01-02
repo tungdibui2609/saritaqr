@@ -860,7 +860,9 @@ export default function WorkScreen() {
 
                                     <View className="flex-1 ml-4">
                                         <Text className="text-zinc-900 font-black text-lg leading-6">{order.id}</Text>
-                                        <Text className="text-zinc-400 font-medium text-xs mt-0.5">Kho {order.warehouse} • {order.date}</Text>
+                                        <Text className="text-zinc-400 font-medium text-xs mt-0.5">
+                                            {order.warehouse === '0' ? order.date : `Kho ${order.warehouse} • ${order.date}`}
+                                        </Text>
                                     </View>
 
                                     <View className="items-end gap-1">
