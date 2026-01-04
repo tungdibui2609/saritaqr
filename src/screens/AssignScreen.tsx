@@ -18,14 +18,16 @@ interface ScannedItem {
 import { Accelerometer } from 'expo-sensors';
 import { AppFooter } from '../components/AppFooter';
 import { useDataSync } from '../hooks/useDataSync';
+import { useNotification } from '../context/NotificationContext';
 
 export default function AssignScreen() {
     const { isDownloading: isDownloadingGlobal, lastUpdated, syncAllData } = useDataSync();
+    const { showToast, showAlert } = useNotification();
     const [items, setItems] = useState<ScannedItem[]>([]);
     const [showScanner, setShowScanner] = useState(false);
     const [showFullAlert, setShowFullAlert] = useState(false);
-    const [toast, setToast] = useState<{ visible: boolean; message: string; type: 'success' | 'info' | 'error' }>({ visible: false, message: '', type: 'success' });
-    const toastTimer = useRef<NodeJS.Timeout | null>(null);
+
+    // Toast removed
     const [permission, requestPermission] = useCameraPermissions();
     const [locations, setLocations] = useState<string[]>([]);
     const [occupied, setOccupied] = useState<Record<string, string>>({});
@@ -125,11 +127,7 @@ export default function AssignScreen() {
         await AsyncStorage.setItem('assign_items', JSON.stringify(items));
     };
 
-    const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
-        if (toastTimer.current) clearTimeout(toastTimer.current);
-        setToast({ visible: true, message, type });
-        toastTimer.current = setTimeout(() => { setToast(prev => ({ ...prev, visible: false })); }, 3000);
-    };
+
 
     const effectiveOccupied = React.useMemo(() => {
         const temp = { ...occupied };
@@ -180,16 +178,42 @@ export default function AssignScreen() {
             } catch (e) { }
         }
 
+        let newPosition = '';
+        const existingItem = items.find(i => i.id === code);
+
+        if (existingItem) {
+            newPosition = existingItem.position;
+        } else {
+            newPosition = findNextAvailablePosition(workWarehouse, workZone, workRow, workLevel);
+        }
+
+        // LOGGING: GAN_VI_TRI
+        if (newPosition) {
+            import('../database/db').then(({ database }) => {
+                database.logOperation('GAN_VI_TRI', code, 1, { position_to: newPosition });
+            }).catch(console.error);
+        }
+
+        if (existingItem) {
+            // Already exists, maybe toast info?
+            // Original logic did NOT toast if existing.
+        } else {
+            if (!newPosition && workRow && workLevel) {
+                setShowFullAlert(true);
+            } else if (newPosition) {
+                showToast(`Đã gán: ${newPosition}`, 'success');
+            } else {
+                showToast(`Đã quét: ${code}`, 'info');
+            }
+        }
+
         setItems(prev => {
             const existingIdx = prev.findIndex(i => i.id === code);
             let position = '';
             if (existingIdx !== -1) {
                 position = prev[existingIdx].position;
             } else {
-                position = findNextAvailablePosition(workWarehouse, workZone, workRow, workLevel);
-                if (!position && workRow && workLevel) { setShowFullAlert(true); }
-                else if (position) { showToast(`Đã gán: ${position}`, 'success'); }
-                else { showToast(`Đã quét: ${code}`, 'info'); }
+                position = newPosition;
             }
             const newItem: ScannedItem = { id: code, timestamp: Date.now(), position, synced: false, quantity: 1 };
             if (existingIdx !== -1) {
@@ -246,14 +270,22 @@ export default function AssignScreen() {
 
     const handleSelectSuggestion = (index: number, loc: string) => {
         const newItems = [...items];
+        const item = newItems[index]; // Get before update
         newItems[index].position = loc;
         setItems(newItems);
         setSuggestions([]);
         setActiveInputIndex(null);
+
+        // LOGGING: GAN_VI_TRI (Manual Select)
+        if (loc) {
+            import('../database/db').then(({ database }) => {
+                database.logOperation('GAN_VI_TRI', item.id, 1, { position_to: loc });
+            }).catch(console.error);
+        }
     };
 
     const handleRemoveItem = (index: number) => {
-        Alert.alert("Xóa mục", "Bạn có chắc muốn xóa mục này?", [
+        showAlert("Xóa mục", "Bạn có chắc muốn xóa mục này?", [
             { text: "Hủy", style: "cancel" },
             { text: "Xóa", style: "destructive", onPress: () => { const newItems = [...items]; newItems.splice(index, 1); setItems(newItems); } }
         ]);
@@ -263,7 +295,7 @@ export default function AssignScreen() {
 
     const handleSync = async () => {
         const pending = items.filter(i => !i.synced && i.position.trim());
-        if (pending.length === 0) { Alert.alert("Thông báo", "Không có mục nào cần đồng bộ."); return; }
+        if (pending.length === 0) { showAlert("Thông báo", "Không có mục nào cần đồng bộ."); return; }
 
         setIsSyncing(true);
         try {
@@ -276,13 +308,13 @@ export default function AssignScreen() {
                 pending.forEach(i => { if (i.position) { newOccupied[i.position] = i.id; newOccupied[i.position.toUpperCase()] = i.id; } });
                 setOccupied(newOccupied);
                 await AsyncStorage.setItem('offline_occupied_locations', JSON.stringify(newOccupied));
-                Alert.alert("Thành công", `Đã đồng bộ ${pending.length} mục!`);
-            } else { Alert.alert("Lỗi", res.data.message || "Sync thất bại"); }
+                showAlert("Thành công", `Đã đồng bộ ${pending.length} mục!`);
+            } else { showAlert("Lỗi", res.data.message || "Sync thất bại"); }
         } catch (e: any) {
             console.error(e);
             let msg = e.message;
             if (e.response?.data) { msg = e.response.data.message || msg; }
-            Alert.alert("Lỗi kết nối", msg);
+            showAlert("Lỗi kết nối", msg);
         } finally { setIsSyncing(false); }
     };
 
@@ -755,14 +787,7 @@ export default function AssignScreen() {
                 </View>
             </Modal>
 
-            {/* Toast Notification */}
-            {toast.visible && (
-                <View className={`absolute bottom-10 left-6 right-6 p-4 rounded-2xl shadow-xl flex-row items-center gap-3 z-50 ${toast.type === 'success' ? 'bg-emerald-600' : toast.type === 'error' ? 'bg-rose-600' : 'bg-zinc-800'
-                    }`}>
-                    <Feather name={toast.type === 'success' ? 'check-circle' : 'info'} size={20} color="white" />
-                    <Text className="text-white font-bold flex-1">{toast.message}</Text>
-                </View>
-            )}
+
         </View>
     );
 }

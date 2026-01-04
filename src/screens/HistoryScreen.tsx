@@ -1,136 +1,374 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, FlatList, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { View, Text, SectionList, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { database, ScannedLot } from '../database/db';
-import { syncService } from '../services/sync';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-export default function HistoryScreen({ onBack }: { onBack: () => void }) {
-    const [history, setHistory] = useState<ScannedLot[]>([]);
+import { database, UserOperation } from '../database/db';
+import DateRangePicker from '../components/common/DateRangePicker';
+import { useOfflineLookup } from '../hooks/useOfflineLookup';
+
+// Types
+type Tab = 'HA_SANH' | 'GAN_VI_TRI' | 'XUAT_KHO';
+
+interface HistoryScreenProps {
+    onBack: () => void;
+}
+
+export default function HistoryScreen({ onBack }: HistoryScreenProps) {
+    const [activeTab, setActiveTab] = useState<Tab>('HA_SANH');
     const [loading, setLoading] = useState(false);
-    const [syncing, setSyncing] = useState(false);
+    const [data, setData] = useState<UserOperation[]>([]);
+    const [summary, setSummary] = useState({ count: 0, totalQty: 0 });
 
-    const loadHistory = useCallback(() => {
+    // Date Filter State
+    const [startDate, setStartDate] = useState(new Date());
+    const [endDate, setEndDate] = useState(new Date());
+    const [showDatePicker, setShowDatePicker] = useState(false);
+
+    // Initialize dates to start/end of day
+    useEffect(() => {
+        const start = new Date(); start.setHours(0, 0, 0, 0);
+        const end = new Date(); end.setHours(23, 59, 59, 999);
+        setStartDate(start);
+        setEndDate(end);
+    }, []);
+
+    // Load data on mount and tab change
+    useEffect(() => {
+        loadData();
+    }, [activeTab, startDate, endDate]);
+
+    const loadData = async () => {
         setLoading(true);
         try {
-            // @ts-ignore - getAllScans added recently
-            const data = database.getAllScans();
-            setHistory(data);
-        } catch (e) {
-            console.error(e);
+            // @ts-ignore - DB types might need refresh in TS server
+            const ops = database.getOperations(startDate.toISOString(), endDate.toISOString(), activeTab);
+            setData(ops);
+
+            // Summary
+            const total = ops.reduce((acc: number, curr: any) => acc + (curr.quantity || 0), 0);
+            setSummary({ count: ops.length, totalQty: total });
+
+        } catch (error) {
+            console.error(error);
+            Alert.alert("Lỗi", "Không thể tải dữ liệu lịch sử");
         } finally {
             setLoading(false);
         }
-    }, []);
-
-    useEffect(() => {
-        loadHistory();
-    }, [loadHistory]);
-
-    const handleSync = async () => {
-        const pending = history.filter(h => h.synced === 0);
-        if (pending.length === 0) {
-            Alert.alert('Thông báo', 'Không có dữ liệu mới để đồng bộ.');
-            return;
-        }
-
-        setSyncing(true);
-        try {
-            const result = await syncService.syncData(pending);
-            if (result.success) {
-                Alert.alert('Thành công', `Đã đồng bộ ${result.count} mục.`);
-                loadHistory(); // Reload to show synced status
-            } else {
-                Alert.alert('Lỗi', 'Đồng bộ thất bại. Vui lòng thử lại.');
-            }
-        } catch (e: any) {
-            Alert.alert('Lỗi', e.message || 'Lỗi kết nối');
-        } finally {
-            setSyncing(false);
-        }
     };
 
-    const handleDelete = (id: number) => {
-        Alert.alert(
-            'Xóa',
-            'Bạn có chắc muốn xóa mục này?',
-            [
-                { text: 'Hủy', style: 'cancel' },
-                {
-                    text: 'Xóa',
-                    style: 'destructive',
-                    onPress: () => {
-                        database.deleteScan(id);
-                        loadHistory();
-                    }
+    const handleDateSelect = (start: Date, end: Date) => {
+        // Set to start/end of day
+        const s = new Date(start); s.setHours(0, 0, 0, 0);
+        const e = new Date(end); e.setHours(23, 59, 59, 999);
+        setStartDate(s);
+        setEndDate(e);
+    };
+
+    // Helper to group data by date
+    const sections = useMemo(() => {
+        const groups: Record<string, any[]> = {};
+        const now = new Date();
+        const todayStr = now.toLocaleDateString('vi-VN');
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toLocaleDateString('vi-VN');
+
+        data.forEach(item => {
+            const dateObj = new Date(item.timestamp);
+            const dateStr = dateObj.toLocaleDateString('vi-VN');
+
+            let title = dateStr;
+            if (dateStr === todayStr) title = 'Hôm nay';
+            else if (dateStr === yesterdayStr) title = 'Hôm qua';
+
+            if (!groups[title]) groups[title] = [];
+            groups[title].push(item);
+        });
+
+        // Convert to SectionList format
+        return Object.keys(groups).map(title => ({
+            title,
+            data: groups[title]
+        }));
+    }, [data, activeTab]);
+
+    // Offline Data Helpers
+    const { lookupLot, reload, _debugIndex, _debugPIndex } = useOfflineLookup() as any;
+
+    useEffect(() => {
+        reload();
+    }, []);
+
+    const renderItem = ({ item }: { item: UserOperation }) => {
+        let details: any = {};
+        try {
+            if (item.details) {
+                const parsed = JSON.parse(item.details);
+                if (typeof parsed === 'string') {
+                    try { details = JSON.parse(parsed); } catch (e) { details = {}; }
+                } else {
+                    details = parsed;
                 }
-            ]
+            }
+        } catch (e) { }
+
+        const isHaSanh = activeTab === 'HA_SANH';
+        const isGanViTri = activeTab === 'GAN_VI_TRI';
+        const isXuatKho = activeTab === 'XUAT_KHO';
+
+        // Try offline lookup for inbound actions
+        const offlineData = (!isXuatKho) ? lookupLot(item.lot_code) : null;
+
+        return (
+            <View className="bg-white p-4 rounded-2xl mb-3 border border-zinc-100 shadow-sm flex-row justify-between items-start">
+                <View className="flex-row gap-3 flex-1 mr-2">
+                    <View className={`w-10 h-10 rounded-full items-center justify-center ${isHaSanh ? 'bg-amber-50' : isGanViTri ? 'bg-blue-50' : 'bg-rose-50'
+                        }`}>
+                        <Feather
+                            name={isHaSanh ? "arrow-down" : isGanViTri ? "arrow-down-left" : "arrow-up-right"}
+                            size={20}
+                            color={isHaSanh ? "#d97706" : isGanViTri ? "#2563eb" : "#e11d48"}
+                        />
+                    </View>
+                    <View className="flex-1">
+                        <Text className="font-black text-zinc-900 text-base">{item.lot_code}</Text>
+
+                        {/* Offline Details for Inbound */}
+                        {offlineData && (
+                            <View className="mt-0.5">
+                                <Text className="text-zinc-800 text-xs font-bold" numberOfLines={2}>{offlineData.productName}</Text>
+                                <Text className="text-zinc-400 text-[10px]">{offlineData.productCode}</Text>
+
+                                {/* Tags / Secondary Codes */}
+                                {offlineData.tags && offlineData.tags.length > 0 && (
+                                    <View className="flex-row flex-wrap gap-1 mt-1">
+                                        {offlineData.tags.map((tag: string, tagIdx: number) => {
+                                            const parts = tag.split('>').filter(p => p.trim() !== '@').map(p => p.trim()).filter(p => p !== "");
+                                            if (parts.length === 0) return null;
+                                            return (
+                                                <View key={tagIdx} className="flex-row items-center">
+                                                    {parts.map((part, i) => (
+                                                        <View key={i} className={`px-1.5 py-[1px] border-y border-l last:border-r ${i === 0 ? "bg-amber-50 border-amber-200" : "bg-zinc-50 border-zinc-200"} ${i === 0 ? "rounded-l" : ""} ${i === parts.length - 1 ? "rounded-r" : ""}`}>
+                                                            <Text className={`text-[9px] font-mono ${i === 0 ? "text-amber-700 font-bold" : "text-zinc-500"}`}>{part}</Text>
+                                                        </View>
+                                                    ))}
+                                                </View>
+                                            );
+                                        })}
+                                    </View>
+                                )}
+                            </View>
+                        )}
+
+                        {isHaSanh && (
+                            <Text className="text-zinc-500 text-xs mt-1">
+                                {item.position_from || '?'} <Feather name="arrow-right" size={10} /> {item.position_to}
+                            </Text>
+                        )}
+                        {isGanViTri && (
+                            <Text className="text-zinc-500 text-xs mt-1">
+                                Đã gán vào: <Text className="font-bold text-zinc-700">{item.position_to}</Text>
+                            </Text>
+                        )}
+                        {isXuatKho && (
+                            <View>
+                                {item.product_name && <Text className="text-zinc-800 text-xs font-bold mt-0.5">{item.product_name}</Text>}
+                                <Text className="text-zinc-400 text-[10px] mt-0.5">Lý do: {item.reason || '---'}</Text>
+                            </View>
+                        )}
+                    </View>
+                </View>
+
+                <View className="items-end">
+                    {activeTab === 'XUAT_KHO' ? (
+                        <Text className="font-black text-lg text-rose-600">
+                            -{item.quantity}
+                            {details?.unit ? ` ${details.unit}` : ''}
+                        </Text>
+                    ) : offlineData ? (
+                        <Text className={`font-black text-lg ${isHaSanh ? 'text-amber-600' : 'text-blue-600'}`}>
+                            {offlineData.quantity}
+                            <Text className="text-xs font-bold text-zinc-500"> {offlineData.unit}</Text>
+                        </Text>
+                    ) : (
+                        <Text className="font-bold text-zinc-400 text-xs uppercase tracking-wider mt-1">{isHaSanh ? 'Moved' : 'Assigned'}</Text>
+                    )}
+
+                    <Text className="text-zinc-400 text-[10px] mt-1">{new Date(item.timestamp).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}</Text>
+                </View>
+            </View>
         );
     };
 
-    const renderItem = ({ item }: { item: ScannedLot }) => (
-        <View className={`p-4 mb-2 rounded-xl border ${item.synced ? 'bg-green-50/50 border-green-200' : 'bg-white border-amber-200 shadow-sm'}`}>
-            <View className="flex-row justify-between items-center">
-                <View>
-                    <Text className="font-bold text-lg text-amber-950">{item.code}</Text>
-                    <Text className="text-gray-500 text-xs">{new Date(item.timestamp).toLocaleString('vi-VN')}</Text>
-                </View>
-                <View className="items-end">
-                    <Text className="font-bold text-amber-600 mb-1">SL: {item.quantity}</Text>
-                    {item.synced ? (
-                        <Text className="text-green-600 text-xs font-medium">✓ Đã đồng bộ</Text>
-                    ) : (
-                        <Text className="text-amber-600 text-xs font-medium">☁ Chưa gửi</Text>
-                    )}
-                </View>
-            </View>
-            {!item.synced && (
-                <TouchableOpacity
-                    className="mt-2 self-end bg-red-100 px-3 py-1 rounded"
-                    onPress={() => handleDelete(item.id)}
-                >
-                    <Text className="text-red-600 text-xs">Xóa</Text>
-                </TouchableOpacity>
-            )}
+    const renderSectionHeader = ({ section: { title } }: { section: { title: string } }) => (
+        <View className="bg-zinc-50 py-2 mb-2">
+            <Text className="text-zinc-500 font-black text-xs uppercase tracking-widest ml-1">{title}</Text>
         </View>
     );
 
     return (
-        <View className="flex-1 bg-amber-50">
-            <View className="bg-amber-900 pt-12 pb-4 px-4 flex-row justify-between items-center rounded-b-2xl shadow-md">
-                <TouchableOpacity onPress={onBack} className="p-2">
-                    <Text className="text-white font-bold text-lg">← Quay lại</Text>
-                </TouchableOpacity>
-                <Text className="text-white font-bold text-xl">Lịch Sử Quét</Text>
-                <View className="w-20" />
+        <SafeAreaView className="flex-1 bg-zinc-50" edges={['top']}>
+            {/* Header */}
+            <View className="px-4 py-4 flex-row items-center justify-between bg-white border-b border-zinc-100">
+                <View className="flex-row items-center gap-3">
+                    <TouchableOpacity onPress={onBack} className="w-10 h-10 rounded-full bg-zinc-50 border border-zinc-100 items-center justify-center">
+                        <Feather name="arrow-left" size={20} color="#52525b" />
+                    </TouchableOpacity>
+                    <Text className="text-xl font-black text-zinc-900">Lịch Sử</Text>
+                </View>
+
+                <View className="flex-row items-center gap-2">
+                    <TouchableOpacity onPress={reload} className="w-10 h-10 rounded-xl bg-zinc-50 border border-zinc-100 items-center justify-center">
+                        <Feather name="refresh-cw" size={16} color="#52525b" />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity onPress={() => setShowDatePicker(true)} className="flex-row items-center bg-zinc-50 px-3 py-2.5 rounded-xl border border-zinc-100">
+                        <Feather name="calendar" size={14} color="#52525b" className="mr-2" />
+                        <Text className="text-xs font-bold text-zinc-700">
+                            {startDate.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })} - {endDate.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}
+                        </Text>
+                    </TouchableOpacity>
+                </View>
             </View>
 
-            <View className="flex-1 px-4 py-4">
-                {loading ? (
-                    <ActivityIndicator color="#d97706" />
+            {/* Tabs */}
+            <View className="flex-row p-1.5 bg-zinc-200/50 mx-4 mt-4 rounded-xl">
+                <TouchableOpacity
+                    onPress={() => setActiveTab('HA_SANH')}
+                    className={`flex-1 py-2.5 rounded-lg items-center ${activeTab === 'HA_SANH' ? 'bg-white shadow-sm' : ''}`}
+                >
+                    <Text className={`font-black text-[10px] uppercase ${activeTab === 'HA_SANH' ? 'text-amber-600' : 'text-zinc-500'}`}>Hạ Sảnh</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                    onPress={() => setActiveTab('GAN_VI_TRI')}
+                    className={`flex-1 py-2.5 rounded-lg items-center ${activeTab === 'GAN_VI_TRI' ? 'bg-white shadow-sm' : ''}`}
+                >
+                    <Text className={`font-black text-[10px] uppercase ${activeTab === 'GAN_VI_TRI' ? 'text-blue-600' : 'text-zinc-500'}`}>Gán Vị Trí</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                    onPress={() => setActiveTab('XUAT_KHO')}
+                    className={`flex-1 py-2.5 rounded-lg items-center ${activeTab === 'XUAT_KHO' ? 'bg-white shadow-sm' : ''}`}
+                >
+                    <Text className={`font-black text-[10px] uppercase ${activeTab === 'XUAT_KHO' ? 'text-rose-600' : 'text-zinc-500'}`}>Xuất Kho</Text>
+                </TouchableOpacity>
+            </View>
+
+            {/* DEBUG OFFLINE - TEMPORARY */}
+            <View className="mx-4 mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
+                <Text className="text-[10px] font-mono text-yellow-800">
+                    LotMap: {Object.keys(_debugIndex || {}).length} | PIndex: {Object.keys(_debugPIndex || {}).length}
+                </Text>
+                <Text className="text-[10px] font-mono text-yellow-800" numberOfLines={1}>
+                    Sample Pos: {Object.values(_debugIndex || {}).slice(0, 2).join(', ')}
+                </Text>
+                <Text className="text-[10px] font-mono text-yellow-800" numberOfLines={1}>
+                    Sample Key: {Object.keys(_debugPIndex || {}).slice(0, 2).join(', ')}
+                </Text>
+            </View>
+
+            {/* Summary Cards */}
+            <View className="px-4 mt-4 mb-2">
+                {activeTab === 'XUAT_KHO' ? (
+                    <View className="bg-zinc-900 rounded-2xl p-4 shadow-lg shadow-zinc-200">
+                        <View className="flex-row items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+                            <View>
+                                <Text className="text-zinc-400 text-[10px] font-black uppercase tracking-widest">Tổng Xuất Kho</Text>
+                                <Text className="text-xs text-zinc-500 font-medium">Theo sản phẩm & đơn vị</Text>
+                            </View>
+                            <View className="w-8 h-8 rounded-full bg-zinc-800 items-center justify-center border border-zinc-700">
+                                <Feather name="package" size={16} color="white" />
+                            </View>
+                        </View>
+
+                        {/* Breakdown List */}
+                        <View className="space-y-3">
+                            {Object.entries(
+                                data.reduce((acc, item) => {
+                                    let unit = '';
+                                    try {
+                                        if (item.details) {
+                                            const parsed = JSON.parse(item.details);
+                                            const d = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+                                            unit = d.unit || '';
+                                        }
+                                    } catch (e) { }
+
+                                    const key = `${item.product_name || 'Khác'}__${unit}`;
+                                    if (!acc[key]) acc[key] = 0;
+                                    acc[key] += item.quantity;
+                                    return acc;
+                                }, {} as Record<string, number>)
+                            ).map(([key, qty], idx) => {
+                                const [name, unit] = key.split('__');
+                                return (
+                                    <View key={idx} className="flex-row justify-between items-center">
+                                        <Text className="text-zinc-300 font-bold text-sm flex-1 mr-2" numberOfLines={1}>{name}</Text>
+                                        <View className="flex-row items-end">
+                                            <Text className="text-xl font-black text-rose-500">{qty.toLocaleString('vi-VN')}</Text>
+                                            {unit ? <Text className="text-zinc-500 text-xs font-bold mb-1 ml-1">{unit}</Text> : null}
+                                        </View>
+                                    </View>
+                                );
+                            })}
+                            {data.length === 0 && <Text className="text-zinc-600 italic text-xs">Chưa có dữ liệu</Text>}
+                        </View>
+                    </View>
                 ) : (
-                    <FlatList
-                        data={history}
-                        keyExtractor={(item) => item.id.toString()}
+                    <View className="bg-zinc-900 rounded-2xl p-4 shadow-lg shadow-zinc-200 flex-row justify-between items-center">
+                        <View>
+                            <Text className="text-zinc-400 text-[10px] font-black uppercase tracking-widest mb-1">
+                                {activeTab === 'HA_SANH' ? 'Số Lượng Hạ Sảnh' : 'Số Lượng Gán Vị Trí'}
+                            </Text>
+                            <View className="flex-row items-end gap-2">
+                                <Text className="text-2xl font-black text-white">{summary.count}</Text>
+                                <Text className="text-zinc-500 font-bold mb-1 ml-0.5 text-[10px]">lượt</Text>
+                            </View>
+                        </View>
+                        <View className="w-10 h-10 rounded-full bg-zinc-800 items-center justify-center border border-zinc-700">
+                            <Feather
+                                name={activeTab === 'HA_SANH' ? "arrow-down" : "map-pin"}
+                                size={20}
+                                color="white"
+                            />
+                        </View>
+                    </View>
+                )}
+            </View>
+
+            {/* List */}
+            <View className="flex-1 px-4 pt-2">
+                {loading ? (
+                    <ActivityIndicator color="#059669" className="mt-10" />
+                ) : (
+                    <SectionList
+                        sections={sections}
+                        keyExtractor={(item, index) => index.toString()}
                         renderItem={renderItem}
-                        ListEmptyComponent={<Text className="text-center text-gray-500 mt-10">Chưa có dữ liệu quét nào</Text>}
+                        renderSectionHeader={renderSectionHeader}
+                        showsVerticalScrollIndicator={false}
+                        contentContainerStyle={{ paddingBottom: 40 }}
+                        stickySectionHeadersEnabled={false}
+                        ListEmptyComponent={
+                            <View className="items-center justify-center mt-10 opacity-50">
+                                <Feather name="inbox" size={40} color="#d4d4d8" />
+                                <Text className="text-zinc-400 font-bold mt-2">Không có dữ liệu</Text>
+                            </View>
+                        }
                     />
                 )}
             </View>
 
-            <View className="p-4 bg-white border-t border-amber-100">
-                <TouchableOpacity
-                    className={`w-full py-4 rounded-xl items-center ${syncing ? 'bg-gray-400' : 'bg-green-600'}`}
-                    onPress={handleSync}
-                    disabled={syncing}
-                >
-                    {syncing ? (
-                        <ActivityIndicator color="white" />
-                    ) : (
-                        <Text className="text-white font-bold text-lg">ĐỒNG BỘ MÁY CHỦ ({history.filter(h => !h.synced).length})</Text>
-                    )}
-                </TouchableOpacity>
-            </View>
-            <StatusBar style="light" />
-        </View>
+            {/* Date Picker Modal */}
+            <DateRangePicker
+                visible={showDatePicker}
+                onClose={() => setShowDatePicker(false)}
+                onSelect={handleDateSelect}
+                initialStartDate={startDate}
+                initialEndDate={endDate}
+            />
+            <StatusBar style="dark" />
+        </SafeAreaView>
     );
 }

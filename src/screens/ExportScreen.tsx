@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, TextInput, Alert, Vibration, Modal, StyleSheet, ActivityIndicator, Image } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, TextInput, Alert, Vibration, Modal, StyleSheet, ActivityIndicator, Image, Switch } from 'react-native';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import client from '../api/client';
@@ -26,12 +26,17 @@ interface LotHeader {
 
 import { AppFooter } from '../components/AppFooter';
 import { Accelerometer } from 'expo-sensors';
+import { useNotification } from '../context/NotificationContext';
 import { useDataSync } from '../hooks/useDataSync';
 import { useOfflineLookup } from '../hooks/useOfflineLookup';
+
+const SUGGESTED_REASONS = ['Bán', 'Sản xuất', 'Phân loại', 'Ký gửi', 'Hủy'];
+
 
 export default function ExportScreen() {
     const { isDownloading: isDownloadingGlobal, lastUpdated, syncAllData } = useDataSync();
     const { isReady: isOfflineReady, lookupLot } = useOfflineLookup();
+    const { showToast, showAlert } = useNotification();
     const [permission, requestPermission] = useCameraPermissions();
     const [showScanner, setShowScanner] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -41,8 +46,15 @@ export default function ExportScreen() {
     const [header, setHeader] = useState<LotHeader | null>(null);
     const [mode, setMode] = useState<'FULL' | 'PARTIAL'>('FULL');
     const [reason, setReason] = useState('');
-    const [toast, setToast] = useState<{ visible: boolean; message: string; type: 'success' | 'info' | 'error' }>({ visible: false, message: '', type: 'success' });
-    const toastTimer = useRef<NodeJS.Timeout | null>(null);
+    const [rememberReason, setRememberReason] = useState(false);
+
+    // New: Session History
+    const [sessionHistory, setSessionHistory] = useState<Array<{
+        code: string;
+        time: string;
+        status: string;
+        details: Array<{ productName: string; quantity: number; unit: string }>
+    }>>([]);
     const isProcessing = useRef(false);
 
     // Camera Toggle State
@@ -50,6 +62,22 @@ export default function ExportScreen() {
     const [subscription, setSubscription] = useState<any>(null);
 
     useEffect(() => {
+        // Load saved reason settings
+        const loadSettings = async () => {
+            try {
+                const savedRemember = await AsyncStorage.getItem('export_remember_reason');
+                const savedReasonText = await AsyncStorage.getItem('export_saved_reason');
+
+                if (savedRemember === 'true') {
+                    setRememberReason(true);
+                    if (savedReasonText) setReason(savedReasonText);
+                }
+            } catch (e) {
+                console.error('Failed to load settings', e);
+            }
+        };
+        loadSettings();
+
         _subscribe();
         return () => _unsubscribe();
     }, []);
@@ -81,13 +109,7 @@ export default function ExportScreen() {
         });
     };
 
-    const showToast = (message: string, type: 'success' | 'info' | 'error' = 'success') => {
-        if (toastTimer.current) clearTimeout(toastTimer.current);
-        setToast({ visible: true, message, type });
-        toastTimer.current = setTimeout(() => {
-            setToast(prev => ({ ...prev, visible: false }));
-        }, 3000);
-    };
+
 
     const fetchLotDetails = async (code: string) => {
         setLoading(true);
@@ -163,7 +185,7 @@ export default function ExportScreen() {
     const handleExport = async () => {
         if (!lotCode) return;
         if (!reason.trim()) {
-            Alert.alert('Thông báo', 'Vui lòng nhập lý do xuất kho để tiếp tục.');
+            showAlert('Thông báo', 'Vui lòng nhập lý do xuất kho để tiếp tục.');
             return;
         }
 
@@ -186,7 +208,7 @@ export default function ExportScreen() {
                 })).filter(item => item.quantity > 0);
 
                 if (payload.items.length === 0) {
-                    Alert.alert('Lỗi', 'Vui lòng nhập số lượng cần xuất cho ít nhất 1 mặt hàng');
+                    showAlert('Lỗi', 'Vui lòng nhập số lượng cần xuất cho ít nhất 1 mặt hàng');
                     setIsExporting(false);
                     return;
                 }
@@ -194,21 +216,56 @@ export default function ExportScreen() {
 
             const res = await client.post('/lots/export', payload);
             if (res.data.ok) {
-                Alert.alert('🎉 Thành công', res.data.message || 'Đã xuất kho thành công hồ sơ này.', [
-                    { text: 'Tuyệt vời', style: 'default' }
-                ]);
+                showToast(res.data.message || 'Đã xuất kho thành công hồ sơ này.', 'success');
+
                 // Reset state
                 setLotCode(null);
                 setLines([]);
                 setHeader(null);
-                setReason('');
                 setMode('FULL');
+
+                // Determine exported items for history
+                const exportedDetails = mode === 'FULL'
+                    ? lines.map(l => ({ productName: l.productName, quantity: l.quantity, unit: l.unit }))
+                    : lines.map(l => ({ productName: l.productName, quantity: parseFloat(l.exportQty || '0'), unit: l.unit })).filter(i => i.quantity > 0);
+
+                // Add to history
+                setSessionHistory(prev => [{
+                    code: lotCode,
+                    time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
+                    status: 'Thành công',
+                    details: exportedDetails
+                }, ...prev]);
+
+                // LOG OPERATION LOCAL
+                (async () => {
+                    try {
+                        const { database } = await import('../database/db');
+                        exportedDetails.forEach(d => {
+                            database.logOperation('XUAT_KHO', lotCode!, d.quantity, {
+                                product_name: d.productName,
+                                reason: reason,
+                                details: { unit: d.unit } as any
+                            });
+                        });
+                    } catch (e) { console.error('Log Error', e); }
+                })();
+
+                // Handle persistent reason
+                if (rememberReason) {
+                    await AsyncStorage.setItem('export_saved_reason', reason);
+                    await AsyncStorage.setItem('export_remember_reason', 'true');
+                } else {
+                    setReason('');
+                    await AsyncStorage.removeItem('export_saved_reason');
+                    await AsyncStorage.setItem('export_remember_reason', 'false');
+                }
             } else {
                 throw new Error(res.data.error || 'EXPORT_FAILED');
             }
         } catch (e: any) {
             console.error(e);
-            Alert.alert('Lỗi xuất kho', e.response?.data?.error || e.message || 'Hệ thống đang gặp sự cố, vui lòng thử lại sau.');
+            showAlert('Lỗi xuất kho', e.response?.data?.error || e.message || 'Hệ thống đang gặp sự cố, vui lòng thử lại sau.');
         } finally {
             setIsExporting(false);
         }
@@ -317,6 +374,14 @@ export default function ExportScreen() {
                             >
                                 <Feather name="maximize-2" size={20} color="white" />
                             </TouchableOpacity>
+
+                            {/* Loading Overlay inside Camera - Centered & On Top */}
+                            {loading && (
+                                <View className="absolute top-0 left-0 right-0 bottom-0 bg-black/80 justify-center items-center z-50">
+                                    <ActivityIndicator size="large" color="#10b981" />
+                                    <Text className="text-white font-bold mt-4">Đang tải dữ liệu LOT...</Text>
+                                </View>
+                            )}
                         </View>
 
                         <View className="items-center justify-center py-10">
@@ -328,6 +393,60 @@ export default function ExportScreen() {
                                 Hãy quét mã QR định danh LOT bằng camera phía trên hoặc nút ở góc phải.
                             </Text>
                         </View>
+
+                        {/* Session History & Summary */}
+                        {sessionHistory.length > 0 && (
+                            <View className="mt-8 px-4 w-full pb-20">
+                                {/* Summary Card */}
+                                <View className="bg-zinc-800 rounded-2xl p-4 mb-6 shadow-lg">
+                                    <View className="flex-row items-center gap-2 mb-3">
+                                        <Feather name="pie-chart" size={16} color="#fbbf24" />
+                                        <Text className="text-amber-400 font-black text-xs uppercase tracking-widest">Tổng kết phiên</Text>
+                                    </View>
+                                    {Object.entries(sessionHistory.reduce((acc, curr) => {
+                                        curr.details.forEach(d => {
+                                            const key = `${d.productName} (${d.unit})`;
+                                            acc[key] = (acc[key] || 0) + d.quantity;
+                                        });
+                                        return acc;
+                                    }, {} as Record<string, number>)).map(([key, total]) => (
+                                        <View key={key} className="flex-row justify-between items-center py-1 border-b border-zinc-700/50 last:border-0">
+                                            <Text className="text-zinc-300 font-medium text-sm">{key.split(' (')[0]}</Text>
+                                            <Text className="text-white font-bold text-base">
+                                                {total.toLocaleString('vi-VN')} <Text className="text-xs text-zinc-500 font-normal">{key.split(' (')[1].replace(')', '')}</Text>
+                                            </Text>
+                                        </View>
+                                    ))}
+                                </View>
+
+                                <Text className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-4 ml-2">Lịch sử chi tiết ({sessionHistory.length})</Text>
+                                {sessionHistory.map((item, idx) => (
+                                    <View key={idx} className="bg-white p-4 rounded-2xl mb-3 border border-zinc-100 shadow-sm">
+                                        <View className="flex-row items-center justify-between mb-2">
+                                            <View className="flex-row items-center gap-3">
+                                                <View className="w-8 h-8 bg-emerald-50 rounded-full items-center justify-center">
+                                                    <Feather name="check" size={14} color="#059669" />
+                                                </View>
+                                                <View>
+                                                    <Text className="font-black text-zinc-900">{item.code}</Text>
+                                                    <Text className="text-[10px] text-zinc-400">{item.time}</Text>
+                                                </View>
+                                            </View>
+                                        </View>
+
+                                        {/* Item Details */}
+                                        <View className="bg-zinc-50 rounded-xl p-2 mt-1 space-y-1">
+                                            {item.details.map((d, dIdx) => (
+                                                <View key={dIdx} className="flex-row justify-between">
+                                                    <Text className="text-xs text-zinc-600 font-medium">{d.productName}</Text>
+                                                    <Text className="text-xs text-zinc-900 font-bold">{d.quantity.toLocaleString('vi-VN')} {d.unit}</Text>
+                                                </View>
+                                            ))}
+                                        </View>
+                                    </View>
+                                ))}
+                            </View>
+                        )}
                     </View>
                 ) : (
                     <View className="space-y-6 px-6 pt-6">
@@ -396,12 +515,35 @@ export default function ExportScreen() {
                                         <Text className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Lý do xuất kho</Text>
                                     </View>
                                     <TextInput
-                                        placeholder="Ghi chú lý do xuất hàng..."
+                                        placeholder="Nhập lý do hoặc chọn mẫu bên dưới..."
                                         value={reason}
                                         onChangeText={setReason}
-                                        className="font-bold text-zinc-900 text-sm p-0"
+                                        className="font-bold text-zinc-900 text-sm p-0 mb-3"
                                         multiline
                                     />
+
+                                    {/* Reason Chips */}
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-4 -mx-1">
+                                        {SUGGESTED_REASONS.map((r) => (
+                                            <TouchableOpacity
+                                                key={r}
+                                                onPress={() => setReason(r)}
+                                                className={`mr-2 px-3 py-1.5 rounded-full border ${reason === r ? 'bg-zinc-900 border-zinc-900' : 'bg-white border-zinc-200'}`}
+                                            >
+                                                <Text className={`text-[10px] font-bold ${reason === r ? 'text-white' : 'text-zinc-600'}`}>{r}</Text>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </ScrollView>
+
+                                    <View className="flex-row items-center justify-between border-t border-zinc-200 pt-3">
+                                        <Text className="text-xs font-bold text-zinc-600">Ghi nhớ lý do này</Text>
+                                        <Switch
+                                            value={rememberReason}
+                                            onValueChange={setRememberReason}
+                                            trackColor={{ false: '#e4e4e7', true: '#10b981' }}
+                                            thumbColor={rememberReason ? '#ffffff' : '#f4f4f5'}
+                                        />
+                                    </View>
                                 </View>
                             </View>
                         </View>
@@ -512,21 +654,9 @@ export default function ExportScreen() {
                 </View>
             </Modal>
 
-            {/* Loading Overlay */}
-            {loading && (
-                <View className="absolute inset-0 bg-white/60 justify-center items-center z-50">
-                    <ActivityIndicator size="large" color="#059669" />
-                    <Text className="mt-4 text-emerald-700 font-bold">Đang tải dữ liệu LOT...</Text>
-                </View>
-            )}
 
-            {/* Toast Notification */}
-            {toast.visible && (
-                <View className={`absolute bottom-10 left-4 right-4 p-4 rounded-2xl shadow-xl flex-row items-center gap-3 z-50 ${toast.type === 'success' ? 'bg-emerald-600' : toast.type === 'error' ? 'bg-rose-600' : 'bg-slate-700'}`}>
-                    <Feather name={toast.type === 'success' ? 'check-circle' : 'info'} size={24} color="white" />
-                    <Text className="text-white font-bold flex-1">{toast.message}</Text>
-                </View>
-            )}
+
+
         </View>
     );
 }

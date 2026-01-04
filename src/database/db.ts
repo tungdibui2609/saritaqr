@@ -9,6 +9,20 @@ export interface ScannedLot {
     quantity: number;
     timestamp: string;
     synced: number; // 0: false, 1: true
+    position?: string;
+}
+
+export interface UserOperation {
+    id: number;
+    type: 'HA_SANH' | 'GAN_VI_TRI' | 'XUAT_KHO';
+    lot_code: string;
+    product_name?: string; // Optional product name/details
+    quantity: number;
+    position_from?: string;
+    position_to?: string;
+    reason?: string;
+    timestamp: string;
+    details?: string; // JSON string for extra data
 }
 
 export const initDatabase = () => {
@@ -19,7 +33,21 @@ export const initDatabase = () => {
         code TEXT NOT NULL,
         quantity REAL NOT NULL,
         timestamp TEXT NOT NULL, 
-        synced INTEGER DEFAULT 0
+        synced INTEGER DEFAULT 0,
+        position TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS user_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        lot_code TEXT NOT NULL,
+        product_name TEXT,
+        quantity REAL NOT NULL,
+        position_from TEXT,
+        position_to TEXT,
+        reason TEXT,
+        timestamp TEXT NOT NULL,
+        details TEXT
       );
     `);
         console.log('Database initialized successfully');
@@ -29,6 +57,7 @@ export const initDatabase = () => {
 };
 
 export const database = {
+    // ... existing ScannedLot methods ...
     addScan: (code: string, quantity: number) => {
         try {
             const timestamp = new Date().toISOString();
@@ -63,6 +92,18 @@ export const database = {
         }
     },
 
+    getScansByRange: (startDate: string, endDate: string): ScannedLot[] => {
+        try {
+            return db.getAllSync(
+                'SELECT * FROM scanned_lots WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp DESC',
+                [startDate, endDate]
+            );
+        } catch (error) {
+            console.error('Error getting scans by range:', error);
+            return [];
+        }
+    },
+
     markAsSynced: (id: number) => {
         try {
             db.runSync('UPDATE scanned_lots SET synced = 1 WHERE id = ?', id);
@@ -85,5 +126,76 @@ export const database = {
         } catch (error) {
             console.error('Error clearing database:', error);
         }
-    }
+    },
+
+    // --- NEW OPERATIONS LOG ---
+
+    logOperation: (
+        type: 'HA_SANH' | 'GAN_VI_TRI' | 'XUAT_KHO',
+        lot_code: string,
+        quantity: number,
+        details: Partial<UserOperation> = {} // Optional fields
+    ) => {
+        const execute = () => {
+            const timestamp = new Date().toISOString();
+            db.runSync(
+                `INSERT INTO user_operations (type, lot_code, product_name, quantity, position_from, position_to, reason, timestamp, details) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                type,
+                lot_code,
+                details.product_name || null,
+                quantity,
+                details.position_from || null,
+                details.position_to || null,
+                details.reason || null,
+                timestamp,
+                details.details ? JSON.stringify(details.details) : null
+            );
+        };
+
+        try {
+            execute();
+        } catch (error: any) {
+            if (error?.message?.includes('no such table')) {
+                console.log('Auto-fixing DB: Creating missing tables...');
+                initDatabase();
+                try { execute(); } catch (retryError) { console.error('Retry failed:', retryError); }
+            } else {
+                console.error('Error logging operation:', error);
+            }
+        }
+    },
+
+    getOperations: (
+        startDate: string,
+        endDate: string,
+        type?: 'HA_SANH' | 'GAN_VI_TRI' | 'XUAT_KHO'
+    ): UserOperation[] => {
+        const execute = () => {
+            let query = 'SELECT * FROM user_operations WHERE timestamp >= ? AND timestamp <= ?';
+            const params = [startDate, endDate];
+
+            if (type) {
+                query += ' AND type = ?';
+                params.push(type);
+            }
+
+            query += ' ORDER BY timestamp DESC';
+            return db.getAllSync(query, params) as UserOperation[];
+        };
+
+        try {
+            return execute();
+        } catch (error: any) {
+            if (error?.message?.includes('no such table')) {
+                console.log('Auto-fixing DB: Creating missing tables...');
+                initDatabase();
+                try { return execute(); } catch (e) { return []; }
+            }
+            console.error('Error getting operations:', error);
+            return [];
+        }
+    },
+
+    // Helper to get distinct dates (for sections) if needed, but handled in UI
 };

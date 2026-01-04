@@ -10,9 +10,11 @@ import clsx from 'clsx';
 import { Feather } from '@expo/vector-icons';
 import { AppFooter } from '../components/AppFooter';
 import { useDataSync } from '../hooks/useDataSync';
+import { useNotification } from '../context/NotificationContext';
 
 export default function WarehouseStatusScreen() {
     const { isDownloading: isDownloadingGlobal, lastUpdated, syncAllData } = useDataSync();
+    const { showAlert } = useNotification();
     const [selectedWarehouse, setSelectedWarehouse] = useState(1);
     const [zones, setZones] = useState<ZoneData[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -42,9 +44,9 @@ export default function WarehouseStatusScreen() {
                     setZones(JSON.parse(cached));
                     setIsOffline(true);
                     // Optional: Alert user once about offline mode
-                    // Alert.alert("Chế độ Offline", "Đang hiển thị dữ liệu đã lưu từ lần trước.");
+                    // showAlert("Chế độ Offline", "Đang hiển thị dữ liệu đã lưu từ lần trước.");
                 } else {
-                    Alert.alert("Lỗi", "Không thể tải dữ liệu và không có bản lưu offline.");
+                    showAlert("Lỗi", "Không thể tải dữ liệu và không có bản lưu offline.");
                 }
             } catch (cacheError) {
                 console.error("Failed to load cache", cacheError);

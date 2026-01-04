@@ -1,14 +1,16 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, Alert, Image, ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, Image, ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import { authService } from '../services/auth';
+import { useNotification } from '../context/NotificationContext';
 
 interface LoginScreenProps {
     onLoginSuccess: (user: any) => void;
 }
 
 export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
+    const { showAlert } = useNotification();
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
@@ -16,17 +18,16 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
 
     const handleLogin = async () => {
         if (!username || !password) {
-            Alert.alert('Lỗi', 'Vui lòng nhập tài khoản và mật khẩu');
+            showAlert('Lỗi', 'Vui lòng nhập tài khoản và mật khẩu');
             return;
         }
 
         setLoading(true);
         try {
             const user = await authService.login(username, password);
-            // Alert.alert('Thành công', `Chào mừng ${user.name || user.username}`);
             onLoginSuccess(user);
         } catch (error: any) {
-            Alert.alert('Đăng nhập thất bại', error.message || 'Có lỗi xảy ra');
+            showAlert('Đăng nhập thất bại', error.message || 'Có lỗi xảy ra');
         } finally {
             setLoading(false);
         }

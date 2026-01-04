@@ -7,12 +7,15 @@ import { authService } from '../services/auth';
 import ColorSettingsView from '../components/settings/ColorSettingsView';
 import clsx from 'clsx';
 import { AppFooter } from '../components/AppFooter';
+import { useNotification } from '../context/NotificationContext';
 
 interface SettingsScreenProps {
     onLogout: () => void;
+    onNavigateHistory?: () => void;
 }
 
-export default function SettingsScreen({ onLogout }: SettingsScreenProps) {
+export default function SettingsScreen({ onLogout, onNavigateHistory }: SettingsScreenProps) {
+    const { showAlert } = useNotification();
     const [activeTab, setActiveTab] = useState<'data' | 'color'>('data');
 
     // Data Stats State
@@ -118,12 +121,12 @@ export default function SettingsScreen({ onLogout }: SettingsScreenProps) {
             await AsyncStorage.setItem('offline_data_last_updated', now);
             setLastUpdated(new Date(parseInt(now)).toLocaleString('vi-VN'));
 
-            Alert.alert(
+            showAlert(
                 "Đồng bộ tất cả thành công",
                 `• Vị trí: ${locCount}\n• Đang chứa: ${occCount}\n• Lệnh xuất: ${ordersCount}\n• Kho 1, 2, 3: Đã tải xong.`
             );
         } catch (error) {
-            Alert.alert("Lỗi", "Không thể tải dữ liệu. Vui lòng kiểm tra kết nối mạng.");
+            showAlert("Lỗi", "Không thể tải dữ liệu. Vui lòng kiểm tra kết nối mạng.");
             console.error(error);
         } finally {
             setIsDownloading(false);
@@ -132,6 +135,26 @@ export default function SettingsScreen({ onLogout }: SettingsScreenProps) {
 
     const renderDataTab = () => (
         <ScrollView className="p-4 space-y-4">
+            {/* Utility Section */}
+            {onNavigateHistory && (
+                <View className="mb-6">
+                    <Text className="text-xs font-black text-zinc-400 uppercase tracking-widest mb-3 ml-1">Báo Cáo & Thống Kê</Text>
+                    <TouchableOpacity
+                        onPress={onNavigateHistory}
+                        className="bg-white p-4 rounded-2xl flex-row items-center border border-zinc-100 shadow-sm active:bg-zinc-50"
+                    >
+                        <View className="w-10 h-10 rounded-full bg-amber-50 items-center justify-center mr-3">
+                            <Feather name="book" size={20} color="#d97706" />
+                        </View>
+                        <View className="flex-1">
+                            <Text className="text-sm font-black text-zinc-800">Sổ Kế Toán</Text>
+                            <Text className="text-xs text-zinc-400 font-medium">Xem lịch sử nhập xuất hàng ngày</Text>
+                        </View>
+                        <Feather name="chevron-right" size={20} color="#d4d4d8" />
+                    </TouchableOpacity>
+                </View>
+            )}
+
             {/* Data Section */}
             <View className="bg-white p-4 rounded-xl border border-zinc-200 shadow-sm">
                 <View className="flex-row justify-between items-center mb-4">

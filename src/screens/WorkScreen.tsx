@@ -40,10 +40,12 @@ const STORAGE_KEYS = {
 };
 
 import { useDataSync } from '../hooks/useDataSync';
+import { useNotification } from '../context/NotificationContext';
 import { AppFooter } from '../components/AppFooter';
 
 export default function WorkScreen() {
     const { isDownloading: isDownloadingGlobal, lastUpdated, syncAllData } = useDataSync();
+    const { showToast, showAlert } = useNotification();
     const [orders, setOrders] = useState<ExportOrder[]>([]);
     const [loading, setLoading] = useState(true);
     const [selectedOrder, setSelectedOrder] = useState<ExportOrder | null>(null);
@@ -59,9 +61,6 @@ export default function WorkScreen() {
     const [permission, requestPermission] = useCameraPermissions();
     const [scanned, setScanned] = useState(false);
     const isProcessing = useRef(false);
-
-    // State for Feedback Toast
-    const [scanFeedback, setScanFeedback] = useState<{ message: string, type: 'success' | 'warning' | 'error' } | null>(null);
 
     // State for optimization & Tabs
     const [activeTab, setActiveTab] = useState<'stats' | 'scan'>('stats');
@@ -239,10 +238,10 @@ export default function WorkScreen() {
             setOrders(processedOrders);
             await saveOrdersToCache(processedOrders);
         } catch (error) {
-            console.error('Fetch orders error:', error);
+            console.warn('Fetch orders error:', error);
             // Don't show alert if we have cached data
             if (orders.length === 0) {
-                Alert.alert('Lỗi', 'Không thể tải danh sách. Đang sử dụng dữ liệu đã lưu.');
+                showAlert('Lỗi', 'Không thể tải danh sách. Đang sử dụng dữ liệu đã lưu.');
             }
         } finally {
             if (showLoadingIndicator) setLoading(false);
@@ -259,10 +258,10 @@ export default function WorkScreen() {
             setLastSyncTime(now);
             await AsyncStorage.setItem(STORAGE_KEYS.LAST_SYNC, now);
 
-            Alert.alert('Thành công', `Đã tải dữ liệu mới nhất từ server.\nBạn có thể làm việc offline.`);
+            showAlert('Thành công', `Đã tải dữ liệu mới nhất từ server.\nBạn có thể làm việc offline.`);
         } catch (error: any) {
             console.error('Download error:', error);
-            Alert.alert('Lỗi', 'Không thể tải dữ liệu. Vui lòng kiểm tra kết nối mạng.');
+            showAlert('Lỗi', 'Không thể tải dữ liệu. Vui lòng kiểm tra kết nối mạng.');
         } finally {
             setIsDownloading(false);
         }
@@ -274,7 +273,7 @@ export default function WorkScreen() {
 
     const handleSync = async () => {
         if (pendingMoves.length === 0) {
-            Alert.alert('Thông báo', 'Không có thao tác nào cần đồng bộ.');
+            showAlert('Thông báo', 'Không có thao tác nào cần đồng bộ.');
             return;
         }
 
@@ -310,7 +309,7 @@ export default function WorkScreen() {
                 let skippedMsg = '';
                 if (alreadyExported.length > 0) skippedMsg += `\n• ${alreadyExported.length} LOT đã xuất kho.`;
 
-                Alert.alert(
+                showAlert(
                     'Đồng bộ hoàn tất',
                     `Tất cả thao tác đã được thực hiện bởi người khác.${skippedMsg}`
                 );
@@ -448,16 +447,16 @@ export default function WorkScreen() {
 
             if (failedCount > 0) {
                 const failedDetails = results.filter(r => !r.success).map(r => `${r.lotCode}: ${r.error}`).join('\n');
-                Alert.alert('Đồng bộ một phần', `${msg}\n\nChi tiết lỗi:\n${failedDetails}`);
+                showAlert('Đồng bộ một phần', `${msg}\n\nChi tiết lỗi:\n${failedDetails}`);
             } else {
-                Alert.alert('Đồng bộ hoàn tất', msg.trim() || "Thành công");
+                showAlert('Đồng bộ hoàn tất', msg.trim() || "Thành công");
             }
 
             await fetchOrders(false);
 
         } catch (error: any) {
             console.error('Sync error:', error);
-            Alert.alert('Lỗi', error.message || 'Không thể đồng bộ. Vui lòng thử lại.');
+            showAlert('Lỗi', error.message || 'Không thể đồng bộ. Vui lòng thử lại.');
         } finally {
             setIsSyncing(false);
         }
@@ -469,7 +468,7 @@ export default function WorkScreen() {
         if (!permission?.granted) {
             const res = await requestPermission();
             if (!res.granted) {
-                Alert.alert('Quyền truy cập', 'Vui lòng cho phép quyền camera để quét mã');
+                showAlert('Quyền truy cập', 'Vui lòng cho phép quyền camera để quét mã');
                 return;
             }
         }
@@ -491,17 +490,7 @@ export default function WorkScreen() {
 
     // ============ BARCODE SCANNING ============
 
-    // Helper for Feedback
-    const showFeedback = (message: string, type: 'success' | 'warning' | 'error') => {
-        setScanFeedback({ message, type });
-        // Auto dismiss and reset scan
-        setTimeout(() => {
-            setScanFeedback(null);
-            setScanned(false);
-            isProcessing.current = false;
-        }, 1500); // 1.5s visible time
-    };
-
+    // Optimized Feedback - now uses global Toast
     const onBarcodeScanned = async ({ data }: { data: string }) => {
         if (scanned || !selectedOrder || isProcessing.current) return;
         isProcessing.current = true;
@@ -523,13 +512,22 @@ export default function WorkScreen() {
         const lotIndex = selectedOrder.lotCodes.indexOf(code);
         if (lotIndex === -1) {
             Vibration.vibrate([0, 50, 50, 50]); // Error vibe
-            showFeedback(`Mã "${code}"\nkhông thuộc lệnh xuất này`, 'error');
+            showToast(`Mã "${code}"\nkhông thuộc lệnh xuất này`, 'error');
+            // Reset scan immediately for quick retry
+            setTimeout(() => {
+                setScanned(false);
+                isProcessing.current = false;
+            }, 1000);
             return;
         }
 
         if (movedLots.has(code)) {
             Vibration.vibrate();
-            showFeedback('LOT này đã quét rồi!', 'warning');
+            showToast('LOT này đã quét rồi!', 'warning');
+            setTimeout(() => {
+                setScanned(false);
+                isProcessing.current = false;
+            }, 1000);
             return;
         }
 
@@ -552,12 +550,31 @@ export default function WorkScreen() {
             setPendingMoves(prev => [...prev, newMove]);
             setMovedLots(new Set([...movedLots, targetLotInfo.lotCode]));
 
+            // LOG OPERATION LOCAL
+            (async () => {
+                try {
+                    const { database } = await import('../database/db');
+                    database.logOperation('HA_SANH', code, 1, {
+                        position_from: targetLotInfo.originalPos,
+                        position_to: 'Sảnh Chờ',
+                        reason: `Lệnh: ${selectedOrder.id}`,
+                        product_name: code.split('-')[0] // Simple parsing or leave blank
+                    });
+                } catch (e) { console.log('Log Error', e); }
+            })();
+
             Vibration.vibrate(100); // Success vibe
-            showFeedback(`Đã lưu: ${code}`, 'success');
+            showToast(`Đã lưu: ${code}`, 'success');
 
         } catch (e) {
             console.error(e);
-            showFeedback('Lỗi lưu trữ', 'error');
+            showToast('Lỗi lưu trữ', 'error');
+        } finally {
+            // Auto dismiss and reset scan
+            setTimeout(() => {
+                setScanned(false);
+                isProcessing.current = false;
+            }, 1000); // 1s cooldown
         }
     };
 
@@ -673,23 +690,7 @@ export default function WorkScreen() {
                                 </View>
 
                                 {/* FEEDBACK TOAST OVERLAY */}
-                                {scanFeedback && (
-                                    <View className="absolute inset-x-4 top-1/2 -mt-10 items-center justify-center pointer-events-none z-50">
-                                        <View className={`px-6 py-4 rounded-2xl shadow-lg items-center ${scanFeedback.type === 'success' ? 'bg-emerald-500' :
-                                            scanFeedback.type === 'warning' ? 'bg-amber-500' : 'bg-red-500'
-                                            }`}>
-                                            <Feather
-                                                name={scanFeedback.type === 'success' ? "check-circle" : "alert-triangle"}
-                                                size={32}
-                                                color="white"
-                                                style={{ marginBottom: 8 }}
-                                            />
-                                            <Text className="text-white font-black text-center text-lg shadow-sm">
-                                                {scanFeedback.message}
-                                            </Text>
-                                        </View>
-                                    </View>
-                                )}
+
 
                                 <TouchableOpacity
                                     onPress={() => setIsCameraActive(!isCameraActive)}
