@@ -450,15 +450,7 @@ export default function AssignScreen() {
                             <Feather name="sliders" size={18} color="#71717a" />
                         </TouchableOpacity>
 
-                        {/* Clear Synced Button */}
-                        {syncedCount > 0 && (
-                            <TouchableOpacity
-                                onPress={handleClearSynced}
-                                className="bg-zinc-100 p-2.5 rounded-xl"
-                            >
-                                <Feather name="trash-2" size={18} color="#71717a" />
-                            </TouchableOpacity>
-                        )}
+
 
                         {/* Local Sync Button (Upload) */}
                         <TouchableOpacity
@@ -541,6 +533,15 @@ export default function AssignScreen() {
                         <View>
                             <View className="flex-row justify-between items-center mb-4 px-1">
                                 <Text className="font-black text-zinc-400 text-[10px] uppercase tracking-widest">Danh sách ({items.length})</Text>
+                                {syncedCount > 0 && (
+                                    <TouchableOpacity
+                                        onPress={handleClearSynced}
+                                        className="flex-row items-center gap-1 bg-red-50 px-2.5 py-1.5 rounded-lg border border-red-100"
+                                    >
+                                        <Feather name="trash-2" size={12} color="#e11d48" />
+                                        <Text className="text-[10px] font-bold text-rose-600">Xóa đã xong</Text>
+                                    </TouchableOpacity>
+                                )}
                             </View>
 
                             {items.map((item, index) => (

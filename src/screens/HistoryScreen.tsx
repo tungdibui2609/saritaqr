@@ -95,7 +95,7 @@ export default function HistoryScreen({ onBack }: HistoryScreenProps) {
     }, [data, activeTab]);
 
     // Offline Data Helpers
-    const { lookupLot, reload, _debugIndex, _debugPIndex } = useOfflineLookup() as any;
+    const { lookupLot, reload } = useOfflineLookup();
 
     useEffect(() => {
         reload();
@@ -168,9 +168,12 @@ export default function HistoryScreen({ onBack }: HistoryScreenProps) {
                             </Text>
                         )}
                         {isGanViTri && (
-                            <Text className="text-zinc-500 text-xs mt-1">
-                                Đã gán vào: <Text className="font-bold text-zinc-700">{item.position_to}</Text>
-                            </Text>
+                            <View className="flex-row items-center mt-1.5">
+                                <Text className="text-zinc-500 text-xs">Đã gán vào:</Text>
+                                <View className="bg-blue-100 px-2 py-0.5 rounded ml-1.5 border border-blue-200">
+                                    <Text className="font-bold text-blue-700 text-xs">{item.position_to}</Text>
+                                </View>
+                            </View>
                         )}
                         {isXuatKho && (
                             <View>
@@ -253,19 +256,6 @@ export default function HistoryScreen({ onBack }: HistoryScreenProps) {
                 >
                     <Text className={`font-black text-[10px] uppercase ${activeTab === 'XUAT_KHO' ? 'text-rose-600' : 'text-zinc-500'}`}>Xuất Kho</Text>
                 </TouchableOpacity>
-            </View>
-
-            {/* DEBUG OFFLINE - TEMPORARY */}
-            <View className="mx-4 mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
-                <Text className="text-[10px] font-mono text-yellow-800">
-                    LotMap: {Object.keys(_debugIndex || {}).length} | PIndex: {Object.keys(_debugPIndex || {}).length}
-                </Text>
-                <Text className="text-[10px] font-mono text-yellow-800" numberOfLines={1}>
-                    Sample Pos: {Object.values(_debugIndex || {}).slice(0, 2).join(', ')}
-                </Text>
-                <Text className="text-[10px] font-mono text-yellow-800" numberOfLines={1}>
-                    Sample Key: {Object.keys(_debugPIndex || {}).slice(0, 2).join(', ')}
-                </Text>
             </View>
 
             {/* Summary Cards */}

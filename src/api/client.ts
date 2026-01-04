@@ -31,7 +31,7 @@ export const exportOrderApi = {
             const response = await client.get('/lots/deleted', { params: { all: 1 } });
             return response.data; // { ok: true, items: [...] }
         } catch (e) {
-            console.error('getDeletedLots error:', e);
+            console.warn('getDeletedLots error:', e);
             return { ok: false, items: [] };
         }
     },
@@ -60,7 +60,7 @@ export const exportOrderApi = {
             }
             return null;
         } catch (e) {
-            console.error('getEmptyHallPosition error:', e);
+            console.warn('getEmptyHallPosition error:', e);
             return null;
         }
     },
@@ -75,8 +75,6 @@ export const exportOrderApi = {
         });
         return response.data;
     },
-
-
 };
 
 export const lotApi = {
@@ -100,7 +98,7 @@ export const warehouseApi = {
             const response = await client.get('/settings/colors');
             return response.data; // Record<string, string>
         } catch (e) {
-            console.error('getColors error:', e);
+            console.warn('getColors error:', e);
             return {};
         }
     }
