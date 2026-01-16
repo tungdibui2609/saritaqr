@@ -147,6 +147,13 @@ export default function AssignScreen() {
                 const parts = upper.split(/[-.]/);
                 const checkToken = (prefix: string, val: number) => {
                     const token = `${prefix}${val}`;
+                    if (prefix === 'L') {
+                        // Avoid matching "PL" when looking for "L" (Level)
+                        return parts.some(p => {
+                            const idx = p.indexOf(token);
+                            return idx !== -1 && (idx === 0 || p[idx - 1] !== 'P');
+                        });
+                    }
                     return parts.some(p => p.includes(token));
                 };
                 const hasWarehouse = checkToken('W', warehouse) || checkToken('K', warehouse) || parts.some(p => p === warehouse.toString());
